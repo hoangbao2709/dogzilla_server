@@ -21,29 +21,27 @@ def _err(msg: str, code: int = 400):
 POSTURE_ACTIONS = {
     "Lie_Down": 1,
     "Stand_Up": 2,
-    "Sit_Down": 3,
-    "Squat": 4,
-    "Crawl": 5,
+    "Crawl": 3,
+    "Squat": 6,
+    "Sit_Down": 12,
 }
 
 BEHAVIOR_ACTIONS = {
-    # Basic fun actions
-    "Wave_Hand": 10,
-    "Handshake": 11,
-    "Pray": 12,
-    "Stretch": 13,
-    "Swing": 14,
+    "Turn_Around": 4,
+    "Mark_Time": 5,
+    "Turn_Roll": 7,
+    "Turn_Pitch": 8,
+    "Turn_Yaw": 9,
+    "3_Axis": 10,
+    "Pee": 11,
+    "Wave_Hand": 13,
+    "Stretch": 14,
     "Wave_Body": 15,
-    "Pee": 16,
-    "Play_Ball": 17,
-    "Mark_Time": 18,
-    "Turn_Roll": 19,
-    "Turn_Pitch": 20,
-    "Turn_Yaw": 21,
-    "3_Axis": 22,
-    "Turn_Around": 23,
+    "Swing": 16,
+    "Pray": 17,
+    "Seek": 18,
+    "Handshake": 19,
 }
-
 
 @bp.route("/control", methods=["POST"])
 def control():
@@ -148,7 +146,7 @@ def control():
                     ["docker", "start", CONTAINER],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    check=False,  
+                    check=False,
                 )
 
                 subprocess.run(
