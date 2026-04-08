@@ -11,7 +11,7 @@ from flask_cors import CORS
 import json
 
 
-from .robot import robot   # d�ng singleton Robot d� t?o + joystick
+from .robot import robot   # use singleton Robot for init + joystick
 LINK_FILE = Path.home() / ".robot_link.json"  # /home/pi/.robot_link.json
 
 app = Flask(__name__)
@@ -66,8 +66,8 @@ def health():
 init_camera()
 atexit.register(cleanup_camera)
 
-# --- START JOYSTICK TAY C?M ---
-# (ch?y 1 l?n khi process Flask du?c import)
+# --- Start joystick listener ---
+# (runs once when Flask process imports this module)
 robot.start_joystick(
     debug=getattr(config, "JOYSTICK_DEBUG", False),
     js_id=getattr(config, "JOYSTICK_ID", 0),
@@ -85,7 +85,7 @@ def link_account():
     if not email or not device_id:
         return jsonify({"ok": False, "error": "email and device_id required"}), 400
 
-    # L�u v�o file
+    # save to file
     with open(LINK_FILE, "w") as f:
         json.dump({"email": email, "device_id": device_id}, f)
 
