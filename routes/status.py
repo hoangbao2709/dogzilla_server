@@ -61,29 +61,29 @@ def _get_disk_usage_string():
 
 def _get_local_ip():
     """
-    Tr? v? IP n?i b? c?a Pi.
-    �u ti�n:
-      1) config.HOST_IP (n?u b?n c� set trong config.py)
-      2) `hostname -I` (l?y IPv4 �?u ti�n)
+    Return local IP address of the Pi.
+    Priority:
+      1) config.HOST_IP (if configured in config.py)
+      2) `hostname -I` (first IPv4 token)
       3) eth0 / wlan0
       4) fallback 'x.x.x.x'
     """
-    # 1) N?u b?n mu?n fix c?ng IP trong config
+    # 1) Use fixed IP from config if provided.
     host_ip = getattr(config, "HOST_IP", None)
     if host_ip:
         return str(host_ip)
 
-    # 2) Th? hostname -I (tr? list IP tr�n 1 d?ng)
+    # 2) Try `hostname -I` (returns a list of IPs on one line)
     try:
         out = subprocess.check_output("hostname -I", shell=True).decode("utf-8").strip()
-        # l?y IPv4 �?u ti�n
+        # take the first IPv4 token
         for token in out.split():
             if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", token):
                 return token
     except Exception as e:
         print("[Status] hostname -I error:", e)
 
-    # 3) Th? eth0 / wlan0 v?i ip/ifconfig
+    # 3) Try eth0/wlan0 via ip/ifconfig.
     for iface in ("eth0", "wlan0"):
         try:
             cmd = f"ip addr show {iface} | grep 'inet ' | awk '{{print $2}}' | cut -d'/' -f1"

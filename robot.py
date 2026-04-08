@@ -2,7 +2,7 @@
 
 from typing import Optional, Dict, Any
 import threading
-import time  # <-- thĂªm cĂ¡i nĂ y
+import time  # used by joystick reconnect loop
 from . import config
 
 from DOGZILLALib import DOGZILLA as _DOG
@@ -11,7 +11,7 @@ from .joystick_dogzilla import Dogzilla_Joystick
 
 
 class Robot:
-    """DOGZILLA wrapper: motion + Z + Attitude (roll/pitch/yaw) vá»›i clamp & state phĂ­a server."""
+    """DOGZILLA wrapper for motion, Z, and attitude with server-side clamp/state."""
 
     def __init__(self) -> None:
         self.dog: Optional[_DOG] = None
@@ -140,7 +140,7 @@ class Robot:
     # ---------- Attitude ----------
 
     def _set_axis(self, ax: str, val: float) -> str:
-        """Gá»i Ä‘Ăºng chá»¯ kĂ½: dog.attitude(axis, value)."""
+        """Call the expected signature: dog.attitude(axis, value)."""
         if self.dog is None:
             with self._att_lock:
                 if ax == 'r':
@@ -153,7 +153,7 @@ class Robot:
 
         try:
             if hasattr(self.dog, "attitude"):
-                self.dog.attitude(ax, int(val))  # cast int cho cháº¯c
+                self.dog.attitude(ax, int(val))  # cast to int for compatibility
             elif ax == 'r' and hasattr(self.dog, "setroll"):
                 self.dog.setroll(int(val))
             elif ax == 'p' and hasattr(self.dog, "setpitch"):
@@ -219,7 +219,7 @@ class Robot:
     def set_body_offset(self, tx: float, ty: float, tz: float,
                         rx: float, ry: float, rz: float) -> None:
         """
-        Cáº­p nháº­t state body_offset trĂªn server (khĂ´ng map gĂ¬, dĂ¹ng nguyĂªn slider).
+        Update body_offset state on the server from raw slider values.
         """
         with self._body_lock:
             self._body_offset = {
@@ -233,7 +233,7 @@ class Robot:
 
     def body_offset(self) -> Dict[str, float]:
         """
-        Tráº£ vá» body_offset hiá»‡n táº¡i Ä‘á»ƒ dĂ¹ng cho /status Ä‘áº©y lĂªn frontend.
+        Return current body_offset for /status synchronization.
         """
         with self._body_lock:
             return dict(self._body_offset)
@@ -248,7 +248,7 @@ class Robot:
 
         self.set_body_offset(tx, ty, tz, rx, ry, rz)
 
-        # Z gi? nguyï¿½n nhï¿½ b?n ï¿½ang lï¿½m
+        # Keep Z behavior as before.
         try:
             z_min = getattr(config, "Z_MIN", 75)
             z_max = getattr(config, "Z_MAX", 115)
@@ -273,9 +273,9 @@ class Robot:
             return mid + v * (hi - mid)
 
         try:
-            # g?p X/Y vï¿½o roll/pitch cho nï¿½ ï¿½cï¿½ tï¿½c d?ngï¿½
-            roll_input = rx + ty * 0.5   # Y ?nh hï¿½?ng roll
-            pitch_input = ry + tx * 0.5  # X ?nh hï¿½?ng pitch
+            # Blend translation X/Y into roll/pitch so all sliders affect posture.
+            roll_input = rx + ty * 0.5   # Y influences roll.
+            pitch_input = ry + tx * 0.5  # X influences pitch.
 
             roll_target = lerp_slider(roll_input, roll_min, roll_max)
             pitch_target = lerp_slider(pitch_input, pitch_min, pitch_max)
@@ -293,8 +293,8 @@ class Robot:
 
     def _joystick_loop(self, debug: bool = False, js_id: int = 0) -> None:
         """
-        VĂ²ng láº·p Ä‘á»c tay cáº§m USB vĂ  gá»i Dogzilla_Joystick.
-        Cháº¡y trong thread riĂªng (daemon).
+        Read USB joystick events and forward them to Dogzilla_Joystick.
+        Runs in a dedicated daemon thread.
         """
         if self.dog is None:
             return
@@ -315,8 +315,7 @@ class Robot:
 
     def start_joystick(self, debug: bool = False, js_id: int = 0) -> None:
         """
-        Gá»i hĂ m nĂ y á»Ÿ chá»— app khá»Ÿi Ä‘á»™ng (vd: khi Django/Flask ready)
-        Ä‘á»ƒ cháº¡y thread tay cáº§m.
+        Call this during app startup to launch the joystick thread.
         """
         if self.dog is None:
             return

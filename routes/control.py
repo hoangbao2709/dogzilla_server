@@ -17,7 +17,7 @@ def _err(msg: str, code: int = 400):
     return jsonify({"ok": False, "error": msg}), code
 
 
-# ====== (1) Báº¢NG ACTION ID â€“ chá»‰nh theo tĂ i liá»‡u Dogzilla cá»§a báº¡n ======
+# ====== (1) Action ID map (align with your Dogzilla documentation) ======
 POSTURE_ACTIONS = {
     "Lie_Down": 1,
     "Stand_Up": 2,
@@ -131,9 +131,9 @@ def control():
 
     if cmd == "lidar":
         """
-        Frontend (qua Django) g?i:
-        - {"command": "lidar", "action": "start"}  -> docker start + docker exec /root/start_slam_stack.sh
-        - {"command": "lidar", "action": "stop"}   -> pkill cï¿½c process SLAM trong container
+        Frontend (via Django) sends:
+        - {"command": "lidar", "action": "start"} -> docker start + docker exec /root/start_slam_stack.sh
+        - {"command": "lidar", "action": "stop"}  -> pkill SLAM processes inside container
         """
 
         action = (data.get("action") or "").strip().lower()
@@ -194,15 +194,14 @@ def control():
     # ---------- 5) Body adjust (6 slider) ----------
     if cmd == "body_adjust":
         """
-        Frontend gá»­i JSON:
+        Frontend sends JSON:
         {
           "tx": ..., "ty": ..., "tz": ...,
           "rx": ..., "ry": ..., "rz": ...
         }
 
-        á» Ä‘Ă¢y ta khĂ´ng map chi tiáº¿t ná»¯a mĂ  giao cho robot.body_adjust()
-        trong robot.py xá»­ lĂ½ (clamp + apply xuá»‘ng DOGZILLA náº¿u cĂ³,
-        Ä‘á»“ng thá»i lÆ°u state body_offset Ä‘á»ƒ /status dĂ¹ng Ä‘á»“ng bá»™ slider).
+        Mapping details are handled in robot.body_adjust() in robot.py
+        (clamp + apply to DOGZILLA if available, and store body_offset for /status sync).
         """
         payload = {
             "tx": float(data.get("tx", 0.0)),

@@ -8,7 +8,7 @@ bp = Blueprint("camera", __name__)
 def camera_feed():
     return camera_response()
 
-# Fallback: 1 khung JPEG don d? test/poll
+# Fallback: single JPEG frame for test/poll
 @bp.route("/frame")
 def camera_frame():
     return single_frame_response()
