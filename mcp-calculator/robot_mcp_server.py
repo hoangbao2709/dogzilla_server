@@ -24,7 +24,7 @@ mcp = FastMCP("RobotController")
 ROBOT_IP = os.getenv("ROBOT_IP", "127.0.0.1")
 ROBOT_PORT = os.getenv("ROBOT_PORT", "9000")
 REQUEST_TIMEOUT = float(os.getenv("ROBOT_TIMEOUT", "5"))
-CONTROL_URL = f"http://172.28.182.104:9000/control"
+CONTROL_URL = f"http://{ROBOT_IP}:{ROBOT_PORT}/control"
 
 POSTURES = {
     "Lie_Down",
