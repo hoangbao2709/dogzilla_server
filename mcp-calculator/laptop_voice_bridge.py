@@ -85,12 +85,56 @@ def find_first_match(normalized: str, mapping: dict[str, list[str]]) -> str | No
                 return target
     return None
 
+def parse_navigation_command(text: str) -> dict[str, Any] | None:
+    normalized = normalize_text(text)
 
+    # đi tới điểm A
+    m = re.search(r"\b(di toi|di den)\s+(diem\s+)?([a-z])\b", normalized)
+    if m:
+        point = m.group(3).upper()
+        return {
+            "tool": "goto_point",
+            "arguments": {"name": point},
+            "matched": f"point_{point}",
+            "normalized_text": normalized,
+            "intent": "navigation",
+        }
+
+    # đi qua A B C
+    m = re.search(r"\b(di qua|toi qua)\s+((?:[a-z]\s*)+)$", normalized)
+    if m:
+        points = re.findall(r"[a-z]", m.group(2))
+        points = [p.upper() for p in points]
+        if points:
+            return {
+                "tool": "goto_waypoints",
+                "arguments": {"points": points},
+                "matched": points,
+                "normalized_text": normalized,
+                "intent": "navigation",
+            }
+
+    # dừng di chuyển
+    if "dung di chuyen" in normalized or "dung lai" in normalized:
+        return {
+            "tool": "stop_navigation",
+            "arguments": {},
+            "matched": "stop_navigation",
+            "normalized_text": normalized,
+            "intent": "navigation",
+        }
+
+    return None
 
 def map_text_to_mcp(text: str) -> dict[str, Any]:
     normalized = normalize_text(text)
     if not normalized:
         raise ValueError("Không nhận được nội dung giọng nói.")
+
+    # Ưu tiên lệnh điều hướng trước
+    nav = parse_navigation_command(text)
+    if nav:
+        return nav
 
     direct = find_first_match(normalized, DIRECT_COMMANDS)
     if direct == "reset":
