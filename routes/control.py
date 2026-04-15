@@ -128,64 +128,48 @@ def control():
 
 
     if cmd == "lidar":
-        """
-        Frontend (qua Django) g?i:
-        - {"command": "lidar", "action": "start"}  -> docker start + docker exec /root/start_slam_stack.sh
-        - {"command": "lidar", "action": "stop"}   -> pkill cï¿½c process SLAM trong container
-        """
-
         action = (data.get("action") or "").strip().lower()
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
-        CONTAINER = "yahboom_humble"
-
         try:
             if action == "start":
-                subprocess.run(
-                    ["docker", "start", CONTAINER],
+                subprocess.Popen(
+                    "bash -lc 'source /opt/ros/humble/setup.bash && ros2 launch mi_bringup robot_navigation.launch.py'",
+                    shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    check=False,  
+                    preexec_fn=os.setsid,
                 )
 
-                subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        "-d",
-                        CONTAINER,
-                        "bash",
-                        "-lc",
-                        "/root/start_slam_stack.sh",
-                    ],
+                time.sleep(2)
+
+                subprocess.Popen(
+                    "bash -lc 'python3 /root/mimi_live_map_new/main.py'",
+                    shell=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    check=True,
+                    preexec_fn=os.setsid,
                 )
 
-                return _ok("lidar start -> SLAM stack started via Docker")
+                return _ok("lidar start -> robot_navigation + live_map started")
 
-            else:  # action == "stop"
+            else:
                 patterns = [
-                    "ms200_with_cartographer_norviz.launch.py",
-                    "cartographer_node",
-                    "oradar_scan",
-                    "slam_live_map.py",
-                    "dogzilla_path_follower.py",
-                    "start_slam_stack.sh",
+                    "robot_navigation.launch.py",
+                    "/root/mimi_live_map_new/main.py",
                 ]
+
                 for p in patterns:
                     subprocess.run(
-                        ["docker", "exec", CONTAINER, "pkill", "-f", p],
+                        f"pkill -f '{p}'",
+                        shell=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                     )
 
-                return _ok("lidar stop -> SLAM stack processes killed")
+                return _ok("lidar stop -> robot_navigation + live_map stopped")
 
-        except subprocess.CalledProcessError as e:
-            return _err(f"lidar {action} error: {e}", 500)
         except Exception as e:
             return _err(str(e), 500)
 
