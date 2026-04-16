@@ -51,6 +51,9 @@ def control():
     if not cmd:
         return _err("missing 'command' field")
 
+    raw_value = data.get("value")
+    raw_delta = data.get("delta")
+
     # ---------- 1) Motion + stop ----------
     if cmd in ("forward", "back", "left", "right", "turnleft", "turnright", "stop"):
         step = data.get("step")
@@ -68,6 +71,101 @@ def control():
             return _err("speed_mode requires 'mode' = 'slow'|'normal'|'high'")
 
         res = robot.set_speed_mode(mode)
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("setz", "set_z"):
+        if raw_value is None:
+            return _err("setz requires 'value'")
+        try:
+            res = robot.setz(int(raw_value))
+        except Exception:
+            return _err("setz requires integer 'value'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("adjustz", "adjust_z"):
+        if raw_delta is None:
+            return _err("adjustz requires 'delta'")
+        try:
+            res = robot.adjustz(int(raw_delta))
+        except Exception:
+            return _err("adjustz requires integer 'delta'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("setroll", "setpitch", "setyaw"):
+        if raw_value is None:
+            return _err(f"{cmd} requires 'value'")
+        try:
+            value = float(raw_value)
+        except Exception:
+            return _err(f"{cmd} requires numeric 'value'")
+
+        if cmd == "setroll":
+            res = robot.set_roll(value)
+        elif cmd == "setpitch":
+            res = robot.set_pitch(value)
+        else:
+            res = robot.set_yaw(value)
+
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("adjustroll", "adjustpitch", "adjustyaw"):
+        if raw_delta is None:
+            return _err(f"{cmd} requires 'delta'")
+        try:
+            delta = float(raw_delta)
+        except Exception:
+            return _err(f"{cmd} requires numeric 'delta'")
+
+        if cmd == "adjustroll":
+            res = robot.adjust_roll(delta)
+        elif cmd == "adjustpitch":
+            res = robot.adjust_pitch(delta)
+        else:
+            res = robot.adjust_yaw(delta)
+
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "gait_type":
+        mode = (data.get("mode") or "").strip().lower()
+        if not mode:
+            return _err("gait_type requires 'mode' = 'trot'|'walk'|'high_walk'")
+        res = robot.set_gait_type(mode)
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "perform":
+        action = (data.get("action") or "").strip().lower()
+        if action not in ("on", "off"):
+            return _err("perform requires 'action' = 'on'|'off'")
+        res = robot.set_perform(action == "on")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "mark_time":
+        if raw_value is None:
+            return _err("mark_time requires 'value'")
+        try:
+            res = robot.set_mark_time(int(raw_value))
+        except Exception:
+            return _err("mark_time requires integer 'value'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "reset":
+        res = robot.reset_pose()
         if res.startswith("error"):
             return _err(res, 400)
         return _ok(res)
@@ -258,6 +356,9 @@ def control():
         return jsonify({
             "robot_connected": robot.dog is not None,
             "speed_mode": robot.speed_mode(),
+            "gait_type": robot.gait_type(),
+            "perform_enabled": robot.perform_enabled(),
+            "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
             "pitch_current": robot.pitch_current(),

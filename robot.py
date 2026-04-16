@@ -36,6 +36,9 @@ class Robot:
             "rz": 0.0,
         }
         self._speed_mode = "normal"
+        self._gait_type = "trot"
+        self._perform_enabled = False
+        self.stabilizing_enabled = False
 
         # joystick state
         self._joystick_thread: Optional[threading.Thread] = None
@@ -60,6 +63,12 @@ class Robot:
     def speed_mode(self) -> str:
         return self._speed_mode
 
+    def gait_type(self) -> str:
+        return self._gait_type
+
+    def perform_enabled(self) -> bool:
+        return self._perform_enabled
+
     def set_speed_mode(self, mode: str) -> str:
         mode = str(mode or "").strip().lower()
         if mode not in ("slow", "normal", "high"):
@@ -76,6 +85,70 @@ class Robot:
             self.dog.pace(mode)
             self._speed_mode = mode
             return f"ok: speed_mode({mode})"
+        except Exception as e:
+            return f"error: {e}"
+
+    def set_gait_type(self, mode: str) -> str:
+        mode = str(mode or "").strip().lower()
+        if mode not in ("trot", "walk", "high_walk"):
+            return "error: gait_type must be one of trot|walk|high_walk"
+
+        if self.dog is None:
+            self._gait_type = mode
+            return f"ok: gait_type({mode}) (robot not connected)"
+
+        if not hasattr(self.dog, "gait_type"):
+            return "error: gait_type unsupported by DOGZILLA lib"
+
+        try:
+            self.dog.gait_type(mode)
+            self._gait_type = mode
+            return f"ok: gait_type({mode})"
+        except Exception as e:
+            return f"error: {e}"
+
+    def set_perform(self, enabled: bool) -> str:
+        value = 1 if bool(enabled) else 0
+
+        if self.dog is None:
+            self._perform_enabled = bool(enabled)
+            return f"ok: perform({value}) (robot not connected)"
+
+        if not hasattr(self.dog, "perform"):
+            return "error: perform unsupported by DOGZILLA lib"
+
+        try:
+            self.dog.perform(value)
+            self._perform_enabled = bool(enabled)
+            return f"ok: perform({value})"
+        except Exception as e:
+            return f"error: {e}"
+
+    def set_mark_time(self, value: int) -> str:
+        value = int(self._clamp(int(value), 0, 35))
+
+        if self.dog is None:
+            return f"ok: mark_time({value}) (robot not connected)"
+
+        if not hasattr(self.dog, "mark_time"):
+            return "error: mark_time unsupported by DOGZILLA lib"
+
+        try:
+            self.dog.mark_time(value)
+            return f"ok: mark_time({value})"
+        except Exception as e:
+            return f"error: {e}"
+
+    def reset_pose(self) -> str:
+        if self.dog is None:
+            return "ok: reset() (robot not connected)"
+
+        if not hasattr(self.dog, "reset"):
+            return "error: reset unsupported by DOGZILLA lib"
+
+        try:
+            self.dog.reset()
+            return "ok: reset()"
         except Exception as e:
             return f"error: {e}"
 
@@ -226,6 +299,15 @@ class Robot:
 
     def set_yaw(self, v: float) -> str:
         return self.set_attitude('y', v)
+
+    def adjust_roll(self, delta: float) -> str:
+        return self.set_roll(self.roll_current() + float(delta))
+
+    def adjust_pitch(self, delta: float) -> str:
+        return self.set_pitch(self.pitch_current() + float(delta))
+
+    def adjust_yaw(self, delta: float) -> str:
+        return self.set_yaw(self.yaw_current() + float(delta))
 
     # status readers
 

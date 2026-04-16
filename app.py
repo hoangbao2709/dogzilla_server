@@ -41,7 +41,13 @@ def root():
             "status": "GET /status",
             "camera": "GET /camera (MJPEG)",
             "frame": "GET /frame (single JPEG)",
-            "speed_mode": "POST /control {command: speed_mode|pace, mode: slow|normal|high}"
+            "speed_mode": "POST /control {command: speed_mode|pace, mode: slow|normal|high}",
+            "attitude": "POST /control {command: setroll|setpitch|setyaw|adjustroll|adjustpitch|adjustyaw, value?|delta?}",
+            "z_control": "POST /control {command: setz|adjustz, value?|delta?}",
+            "gait_type": "POST /control {command: gait_type, mode: trot|walk|high_walk}",
+            "perform": "POST /control {command: perform, action: on|off}",
+            "mark_time": "POST /control {command: mark_time, value: 0..35}",
+            "reset": "POST /control {command: reset}"
         }
     })
 
