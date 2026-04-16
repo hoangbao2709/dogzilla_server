@@ -40,7 +40,8 @@ def root():
             "control": "POST /control",
             "status": "GET /status",
             "camera": "GET /camera (MJPEG)",
-            "frame": "GET /frame (single JPEG)"
+            "frame": "GET /frame (single JPEG)",
+            "speed_mode": "POST /control {command: speed_mode|pace, mode: slow|normal|high}"
         }
     })
 

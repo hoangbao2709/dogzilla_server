@@ -6,6 +6,7 @@ from .. import config
 import os
 import signal
 import subprocess
+import time
 bp = Blueprint("control", __name__)
 
 
@@ -54,10 +55,21 @@ def control():
     if cmd in ("forward", "back", "left", "right", "turnleft", "turnright", "stop"):
         step = data.get("step")
         speed = data.get("speed")
-        res = robot.do_motion(cmd, step=step, speed=speed)
+        mode = data.get("mode")
+        res = robot.do_motion(cmd, step=step, speed=speed, mode=mode)
         print("[BODY_ADJUST] payload =", res)
         if res.startswith("error"):
             return _err(res, 500)
+        return _ok(res)
+
+    if cmd in ("speed_mode", "pace"):
+        mode = data.get("mode")
+        if not mode:
+            return _err("speed_mode requires 'mode' = 'slow'|'normal'|'high'")
+
+        res = robot.set_speed_mode(mode)
+        if res.startswith("error"):
+            return _err(res, 400)
         return _ok(res)
 
     # ---------- 2) Posture ----------
@@ -126,52 +138,91 @@ def control():
             print(f"[Control]   ERROR calling imu(): {e}")
             return _err(str(e), 500)
 
-
     if cmd == "lidar":
         action = (data.get("action") or "").strip().lower()
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
+        container = "yahboom_humble"
+
         try:
             if action == "start":
-                subprocess.Popen(
-                    "bash -lc 'source /opt/ros/humble/setup.bash && ros2 launch mi_bringup robot_navigation.launch.py'",
-                    shell=True,
+                subprocess.run(
+                    ["docker", "start", container],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setsid,
+                    check=False,
                 )
 
-                time.sleep(2)
-
-                subprocess.Popen(
-                    "bash -lc 'python3 /root/mimi_live_map_new/main.py'",
-                    shell=True,
+                subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "-d",
+                        container,
+                        "bash",
+                        "-lc",
+                        "source /opt/ros/humble/setup.bash && "
+                        "source /root/yahboomcar_ws/install/setup.bash && "
+                        "ros2 launch mi_bringup robot_navigation.launch.py "
+                        "> /tmp/lidar_ros.log 2>&1",
+                    ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    preexec_fn=os.setsid,
+                    check=True,
                 )
 
-                return _ok("lidar start -> robot_navigation + live_map started")
+                time.sleep(3)
 
-            else:
-                patterns = [
-                    "robot_navigation.launch.py",
-                    "/root/mimi_live_map_new/main.py",
-                ]
+                subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        "-d",
+                        container,
+                        "bash",
+                        "-lc",
+                        "source /opt/ros/humble/setup.bash && "
+                        "source /root/yahboomcar_ws/install/setup.bash && "
+                        "python3 /root/mimi_live_map_new/main.py "
+                        "> /tmp/lidar_map.log 2>&1",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                return _ok("lidar start -> docker ros navigation + live_map started")
 
-                for p in patterns:
-                    subprocess.run(
-                        f"pkill -f '{p}'",
-                        shell=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-
-                return _ok("lidar stop -> robot_navigation + live_map stopped")
-
+            patterns = [
+                "robot_navigation.launch.py",
+                "/root/mimi_live_map_new/main.py",
+                "oradar_scan",
+                "cartographer_node",
+                "planner_server",
+                "controller_server",
+                "behavior_server",
+                "bt_navigator",
+                "waypoint_follower",
+                "velocity_smoother",
+                "lifecycle_manager",
+                "dogzilla_cmd_adapter",
+                "dogzilla_state_bridge",
+                "obstacle_avoidance_filter",
+            ]
+            for pattern in patterns:
+                subprocess.run(
+                    ["docker", "exec", container, "pkill", "-f", pattern],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            return _ok("lidar stop -> docker lidar stack stopped")
+        except subprocess.CalledProcessError as e:
+            return _err(f"lidar {action} error: {e}", 500)
         except Exception as e:
             return _err(str(e), 500)
+
+
 
     # ---------- 5) Body adjust (6 slider) ----------
     if cmd == "body_adjust":
@@ -206,6 +257,7 @@ def control():
     if cmd == "status":
         return jsonify({
             "robot_connected": robot.dog is not None,
+            "speed_mode": robot.speed_mode(),
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
             "pitch_current": robot.pitch_current(),

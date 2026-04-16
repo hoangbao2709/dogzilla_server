@@ -136,6 +136,7 @@ def status():
 
     data = {
         "robot_connected": robot.dog is not None,
+        "speed_mode": robot.speed_mode(),
         "turn_speed_range": [
             getattr(config, "TURN_MIN", -70),
             getattr(config, "TURN_MAX",  70),
