@@ -18,6 +18,38 @@ def _err(msg: str, code: int = 400):
     return jsonify({"ok": False, "error": msg}), code
 
 
+def _run_checked(cmd, *, timeout=None):
+    return subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+
+
+def _tail_in_container(container: str, path: str, lines: int = 40) -> str:
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "exec",
+                container,
+                "bash",
+                "-lc",
+                f"tail -n {int(lines)} {path} 2>/dev/null || true",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return (res.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 POSTURE_ACTIONS = {
     "Lie_Down": 1,
     "Stand_Up": 2,
@@ -245,14 +277,9 @@ def control():
 
         try:
             if action == "start":
-                subprocess.run(
-                    ["docker", "start", container],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+                subprocess.run(["docker", "start", container], check=False)
 
-                subprocess.run(
+                _run_checked(
                     [
                         "docker",
                         "exec",
@@ -265,14 +292,11 @@ def control():
                         "ros2 launch mi_bringup robot_navigation.launch.py "
                         "> /tmp/lidar_ros.log 2>&1",
                     ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
                 )
 
                 time.sleep(3)
 
-                subprocess.run(
+                _run_checked(
                     [
                         "docker",
                         "exec",
@@ -285,10 +309,45 @@ def control():
                         "python3 /root/mimi_live_map_new/main.py "
                         "> /tmp/lidar_map.log 2>&1",
                     ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
                 )
+
+                time.sleep(2)
+                probe = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        container,
+                        "bash",
+                        "-lc",
+                        "python3 - <<'PY'\n"
+                        "import sys, urllib.request\n"
+                        "try:\n"
+                        "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=2) as r:\n"
+                        "        print(r.status)\n"
+                        "except Exception as e:\n"
+                        "    print(f'ERR:{e}')\n"
+                        "    sys.exit(1)\n"
+                        "PY",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                if probe.returncode != 0:
+                    ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
+                    map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+                    details = []
+                    if probe.stdout:
+                        details.append(f"map probe: {probe.stdout.strip()}")
+                    if probe.stderr:
+                        details.append(f"probe stderr: {probe.stderr.strip()}")
+                    if ros_log:
+                        details.append(f"ros log tail: {ros_log}")
+                    if map_log:
+                        details.append(f"map log tail: {map_log}")
+                    return _err("lidar start launched but map service is not ready | " + " | ".join(details), 500)
+
                 return _ok("lidar start -> docker ros navigation + live_map started")
 
             patterns = [
@@ -308,15 +367,23 @@ def control():
                 "obstacle_avoidance_filter",
             ]
             for pattern in patterns:
-                subprocess.run(
-                    ["docker", "exec", container, "pkill", "-f", pattern],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
+                subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
             return _ok("lidar stop -> docker lidar stack stopped")
         except subprocess.CalledProcessError as e:
-            return _err(f"lidar {action} error: {e}", 500)
+            stdout = (e.stdout or "").strip()
+            stderr = (e.stderr or "").strip()
+            ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
+            map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+            details = [f"cmd={e.cmd}"]
+            if stdout:
+                details.append(f"stdout={stdout}")
+            if stderr:
+                details.append(f"stderr={stderr}")
+            if ros_log:
+                details.append(f"ros log tail: {ros_log}")
+            if map_log:
+                details.append(f"map log tail: {map_log}")
+            return _err(f"lidar {action} error | " + " | ".join(details), 500)
         except Exception as e:
             return _err(str(e), 500)
 
