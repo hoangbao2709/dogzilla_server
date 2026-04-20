@@ -113,6 +113,7 @@ def status():
     """
 
     battery = None
+    voltage = 11.4
     fw      = None
 
     if robot.dog is not None:
@@ -122,6 +123,8 @@ def status():
         except Exception as e:
             # print("[Status] read_battery error:", e)
             battery = robot.dog.read_battery()
+        if battery is not None:
+            voltage = round(9.0 + (battery / 100.0) * 3.6, 2)
         # try:
         #     if hasattr(robot.dog, "read_version"):
         #         fw = robot.dog.read_version()
@@ -158,6 +161,7 @@ def status():
         "pitch_current": robot.pitch_current(),
         "yaw_current": robot.yaw_current(),
         "battery": battery,
+        "voltage": voltage,
         "fw": fw,
         "fps": getattr(config, "FRAME_FPS", 30),
 
