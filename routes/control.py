@@ -6,6 +6,7 @@ from .. import config
 import os
 import signal
 import subprocess
+import time
 bp = Blueprint("control", __name__)
 
 
@@ -17,31 +18,61 @@ def _err(msg: str, code: int = 400):
     return jsonify({"ok": False, "error": msg}), code
 
 
-# ====== (1) Báº¢NG ACTION ID â€“ chá»‰nh theo tĂ i liá»‡u Dogzilla cá»§a báº¡n ======
+def _run_checked(cmd, *, timeout=None):
+    return subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+
+
+def _tail_in_container(container: str, path: str, lines: int = 40) -> str:
+    try:
+        res = subprocess.run(
+            [
+                "docker",
+                "exec",
+                container,
+                "bash",
+                "-lc",
+                f"tail -n {int(lines)} {path} 2>/dev/null || true",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return (res.stdout or "").strip()
+    except Exception:
+        return ""
+
+
 POSTURE_ACTIONS = {
     "Lie_Down": 1,
     "Stand_Up": 2,
-    "Sit_Down": 3,
-    "Squat": 4,
-    "Crawl": 5,
+    "Crawl": 3,
+    "Squat": 6,
+    "Sit_Down": 12,
 }
 
 BEHAVIOR_ACTIONS = {
-    # Basic fun actions
-    "Wave_Hand": 10,
-    "Handshake": 11,
-    "Pray": 12,
-    "Stretch": 13,
-    "Swing": 14,
+    "Turn_Around": 4,
+    "Mark_Time": 5,
+    "Turn_Roll": 7,
+    "Turn_Pitch": 8,
+    "Turn_Yaw": 9,
+    "3_Axis": 10,
+    "Pee": 11,
+    "Wave_Hand": 13,
+    "Stretch": 14,
     "Wave_Body": 15,
-    "Pee": 16,
-    "Play_Ball": 17,
-    "Mark_Time": 18,
-    "Turn_Roll": 19,
-    "Turn_Pitch": 20,
-    "Turn_Yaw": 21,
-    "3_Axis": 22,
-    "Turn_Around": 23,
+    "Swing": 16,
+    "Pray": 17,
+    "Seek": 18,
+    "Handshake": 19,
 }
 
 
@@ -52,14 +83,123 @@ def control():
     if not cmd:
         return _err("missing 'command' field")
 
+    raw_value = data.get("value")
+    raw_delta = data.get("delta")
+
     # ---------- 1) Motion + stop ----------
     if cmd in ("forward", "back", "left", "right", "turnleft", "turnright", "stop"):
         step = data.get("step")
         speed = data.get("speed")
-        res = robot.do_motion(cmd, step=step, speed=speed)
+        mode = data.get("mode")
+        res = robot.do_motion(cmd, step=step, speed=speed, mode=mode)
         print("[BODY_ADJUST] payload =", res)
         if res.startswith("error"):
             return _err(res, 500)
+        return _ok(res)
+
+    if cmd in ("speed_mode", "pace"):
+        mode = data.get("mode")
+        if not mode:
+            return _err("speed_mode requires 'mode' = 'slow'|'normal'|'high'")
+
+        res = robot.set_speed_mode(mode)
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("setz", "set_z"):
+        if raw_value is None:
+            return _err("setz requires 'value'")
+        try:
+            res = robot.setz(int(raw_value))
+        except Exception:
+            return _err("setz requires integer 'value'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("adjustz", "adjust_z"):
+        if raw_delta is None:
+            return _err("adjustz requires 'delta'")
+        try:
+            res = robot.adjustz(int(raw_delta))
+        except Exception:
+            return _err("adjustz requires integer 'delta'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("setroll", "setpitch", "setyaw"):
+        if raw_value is None:
+            return _err(f"{cmd} requires 'value'")
+        try:
+            value = float(raw_value)
+        except Exception:
+            return _err(f"{cmd} requires numeric 'value'")
+
+        if cmd == "setroll":
+            res = robot.set_roll(value)
+        elif cmd == "setpitch":
+            res = robot.set_pitch(value)
+        else:
+            res = robot.set_yaw(value)
+
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd in ("adjustroll", "adjustpitch", "adjustyaw"):
+        if raw_delta is None:
+            return _err(f"{cmd} requires 'delta'")
+        try:
+            delta = float(raw_delta)
+        except Exception:
+            return _err(f"{cmd} requires numeric 'delta'")
+
+        if cmd == "adjustroll":
+            res = robot.adjust_roll(delta)
+        elif cmd == "adjustpitch":
+            res = robot.adjust_pitch(delta)
+        else:
+            res = robot.adjust_yaw(delta)
+
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "gait_type":
+        mode = (data.get("mode") or "").strip().lower()
+        if not mode:
+            return _err("gait_type requires 'mode' = 'trot'|'walk'|'high_walk'")
+        res = robot.set_gait_type(mode)
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "perform":
+        action = (data.get("action") or "").strip().lower()
+        if action not in ("on", "off"):
+            return _err("perform requires 'action' = 'on'|'off'")
+        res = robot.set_perform(action == "on")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "mark_time":
+        if raw_value is None:
+            return _err("mark_time requires 'value'")
+        try:
+            res = robot.set_mark_time(int(raw_value))
+        except Exception:
+            return _err("mark_time requires integer 'value'")
+        if res.startswith("error"):
+            return _err(res, 400)
+        return _ok(res)
+
+    if cmd == "reset":
+        res = robot.reset_pose()
+        if res.startswith("error"):
+            return _err(res, 400)
         return _ok(res)
 
     # ---------- 2) Posture ----------
@@ -128,68 +268,126 @@ def control():
             print(f"[Control]   ERROR calling imu(): {e}")
             return _err(str(e), 500)
 
-
     if cmd == "lidar":
-        """
-        Frontend (qua Django) g?i:
-        - {"command": "lidar", "action": "start"}  -> docker start + docker exec /root/start_slam_stack.sh
-        - {"command": "lidar", "action": "stop"}   -> pkill cï¿½c process SLAM trong container
-        """
-
         action = (data.get("action") or "").strip().lower()
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
-        CONTAINER = "yahboom_humble"
+        container = "yahboom_humble"
 
         try:
             if action == "start":
-                subprocess.run(
-                    ["docker", "start", CONTAINER],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,  
-                )
+                subprocess.run(["docker", "start", container], check=False)
 
-                subprocess.run(
+                _run_checked(
                     [
                         "docker",
                         "exec",
                         "-d",
-                        CONTAINER,
+                        container,
                         "bash",
                         "-lc",
-                        "/root/start_slam_stack.sh",
+                        "source /opt/ros/humble/setup.bash && "
+                        "source /root/yahboomcar_ws/install/setup.bash && "
+                        "ros2 launch mi_bringup robot_navigation.launch.py "
+                        "> /tmp/lidar_ros.log 2>&1",
                     ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
                 )
 
-                return _ok("lidar start -> SLAM stack started via Docker")
+                time.sleep(3)
 
-            else:  # action == "stop"
-                patterns = [
-                    "ms200_with_cartographer_norviz.launch.py",
-                    "cartographer_node",
-                    "oradar_scan",
-                    "slam_live_map.py",
-                    "dogzilla_path_follower.py",
-                    "start_slam_stack.sh",
-                ]
-                for p in patterns:
-                    subprocess.run(
-                        ["docker", "exec", CONTAINER, "pkill", "-f", p],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                _run_checked(
+                    [
+                        "docker",
+                        "exec",
+                        "-d",
+                        container,
+                        "bash",
+                        "-lc",
+                        "source /opt/ros/humble/setup.bash && "
+                        "source /root/yahboomcar_ws/install/setup.bash && "
+                        "python3 /root/mimi_live_map_new/main.py "
+                        "> /tmp/lidar_map.log 2>&1",
+                    ],
+                )
 
-                return _ok("lidar stop -> SLAM stack processes killed")
+                time.sleep(2)
+                probe = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        container,
+                        "bash",
+                        "-lc",
+                        "python3 - <<'PY'\n"
+                        "import sys, urllib.request\n"
+                        "try:\n"
+                        "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=2) as r:\n"
+                        "        print(r.status)\n"
+                        "except Exception as e:\n"
+                        "    print(f'ERR:{e}')\n"
+                        "    sys.exit(1)\n"
+                        "PY",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                )
+                if probe.returncode != 0:
+                    ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
+                    map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+                    details = []
+                    if probe.stdout:
+                        details.append(f"map probe: {probe.stdout.strip()}")
+                    if probe.stderr:
+                        details.append(f"probe stderr: {probe.stderr.strip()}")
+                    if ros_log:
+                        details.append(f"ros log tail: {ros_log}")
+                    if map_log:
+                        details.append(f"map log tail: {map_log}")
+                    return _err("lidar start launched but map service is not ready | " + " | ".join(details), 500)
 
+                return _ok("lidar start -> docker ros navigation + live_map started")
+
+            patterns = [
+                "robot_navigation.launch.py",
+                "/root/mimi_live_map_new/main.py",
+                "oradar_scan",
+                "cartographer_node",
+                "planner_server",
+                "controller_server",
+                "behavior_server",
+                "bt_navigator",
+                "waypoint_follower",
+                "velocity_smoother",
+                "lifecycle_manager",
+                "dogzilla_cmd_adapter",
+                "dogzilla_state_bridge",
+                "obstacle_avoidance_filter",
+            ]
+            for pattern in patterns:
+                subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
+            return _ok("lidar stop -> docker lidar stack stopped")
         except subprocess.CalledProcessError as e:
-            return _err(f"lidar {action} error: {e}", 500)
+            stdout = (e.stdout or "").strip()
+            stderr = (e.stderr or "").strip()
+            ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
+            map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+            details = [f"cmd={e.cmd}"]
+            if stdout:
+                details.append(f"stdout={stdout}")
+            if stderr:
+                details.append(f"stderr={stderr}")
+            if ros_log:
+                details.append(f"ros log tail: {ros_log}")
+            if map_log:
+                details.append(f"map log tail: {map_log}")
+            return _err(f"lidar {action} error | " + " | ".join(details), 500)
         except Exception as e:
             return _err(str(e), 500)
+
+
 
     # ---------- 5) Body adjust (6 slider) ----------
     if cmd == "body_adjust":
@@ -224,6 +422,10 @@ def control():
     if cmd == "status":
         return jsonify({
             "robot_connected": robot.dog is not None,
+            "speed_mode": robot.speed_mode(),
+            "gait_type": robot.gait_type(),
+            "perform_enabled": robot.perform_enabled(),
+            "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
             "pitch_current": robot.pitch_current(),

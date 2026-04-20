@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Control Robot</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 16px; }
+    button { padding: 12px 18px; font-size: 16px; margin-right: 8px; cursor: pointer; margin-bottom: 8px; }
+    textarea { width: 100%; min-height: 110px; margin-top: 16px; padding: 12px; font-size: 15px; box-sizing: border-box; }
+    pre { background: #111; color: #f5f5f5; padding: 16px; border-radius: 8px; white-space: pre-wrap; word-wrap: break-word; }
+    .row { margin: 14px 0; }
+    .muted { color: #555; }
+    .status { font-weight: bold; }
+    .examples {
+      margin-top: 16px;
+      padding: 16px;
+      background: #f5f7fb;
+      border: 1px solid #dbe3f0;
+      border-radius: 10px;
+    }
+    .examples h3 {
+      margin-top: 0;
+      margin-bottom: 10px;
+    }
+    .examples-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+    }
+    .example-group {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .example-group h4 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+    }
+    .example-group ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    .example-group li {
+      margin-bottom: 6px;
+    }
+    .chip-row {
+      margin-top: 10px;
+    }
+    .chip {
+      display: inline-block;
+      padding: 6px 10px;
+      margin: 4px 6px 0 0;
+      background: #e9eefc;
+      border: 1px solid #cdd8fb;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .chip:hover {
+      background: #dfe7ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Điều khiển robot bằng giọng nói từ laptop</h1>
+  <p class="muted">Nhấn ghi âm, nói lệnh, browser sẽ đổi giọng nói thành text rồi gửi sang backend để gọi MCP tool.</p>
+
+  <div class="row">
+    <button id="startBtn">🎤 Bắt đầu nói</button>
+    <button id="stopBtn">⏹️ Dừng</button>
+    <button id="sendBtn">🚀 Gửi text hiện tại</button>
+  </div>
+
+  <div class="row status" id="status">Trạng thái: chưa ghi âm</div>
+  <textarea id="transcript" placeholder="Ví dụ: đứng lên, bắt tay, vẫy tay, nằm xuống..."></textarea>
+
+  <div class="examples">
+    <h3>Ví dụ câu lệnh có thể nói</h3>
+
+    <div class="examples-grid">
+      <div class="example-group">
+        <h4>Tư thế</h4>
+        <ul>
+          <li>đứng lên</li>
+          <li>nằm xuống</li>
+          <li>bò</li>
+          <li>ngồi xuống</li>
+          <li>ngồi xổm</li>
+        </ul>
+      </div>
+
+      <div class="example-group">
+        <h4>Hành vi</h4>
+        <ul>
+          <li>bắt tay</li>
+          <li>vẫy tay</li>
+          <li>cầu nguyện</li>
+          <li>duỗi người</li>
+          <li>chơi bóng</li>
+        </ul>
+      </div>
+
+      <div class="example-group">
+        <h4>Chuyển động đặc biệt</h4>
+        <ul>
+          <li>quay vòng</li>
+          <li>đánh dấu bước</li>
+          <li>lắc người</li>
+          <li>xoay yaw</li>
+          <li>xoay 3 trục</li>
+        </ul>
+      </div>
+
+      <div class="example-group">
+        <h4>Lệnh hệ thống</h4>
+        <ul>
+          <li>reset</li>
+          <li>khởi động lại tư thế</li>
+          <li>rotation</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="chip-row">
+      <span class="chip" onclick="fillExample('đứng lên')">đứng lên</span>
+      <span class="chip" onclick="fillExample('nằm xuống')">nằm xuống</span>
+      <span class="chip" onclick="fillExample('bò')">bò</span>
+      <span class="chip" onclick="fillExample('ngồi xuống')">ngồi xuống</span>
+      <span class="chip" onclick="fillExample('ngồi xổm')">ngồi xổm</span>
+      <span class="chip" onclick="fillExample('bắt tay')">bắt tay</span>
+      <span class="chip" onclick="fillExample('vẫy tay')">vẫy tay</span>
+      <span class="chip" onclick="fillExample('chơi bóng')">chơi bóng</span>
+      <span class="chip" onclick="fillExample('cầu nguyện')">cầu nguyện</span>
+      <span class="chip" onclick="fillExample('quay vòng')">quay vòng</span>
+      <span class="chip" onclick="fillExample('reset')">reset</span>
+    </div>
+  </div>
+
+  <h3>Kết quả</h3>
+  <pre id="result">Chưa có dữ liệu.</pre>
+
+<script>
+  const statusEl = document.getElementById('status');
+  const transcriptEl = document.getElementById('transcript');
+  const resultEl = document.getElementById('result');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const sendBtn = document.getElementById('sendBtn');
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+
+  function setStatus(message) {
+    statusEl.textContent = `Trạng thái: ${message}`;
+  }
+
+  function fillExample(text) {
+    transcriptEl.value = text;
+  }
+
+  async function sendTextCommand() {
+    const text = transcriptEl.value.trim();
+    if (!text) {
+      setStatus('chưa có text để gửi');
+      return;
+    }
+
+    setStatus('đang gửi lệnh tới backend...');
+    resultEl.textContent = 'Đang gửi...';
+
+    try {
+      const response = await fetch('/api/text-command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+      });
+
+      const data = await response.json();
+      resultEl.textContent = JSON.stringify(data, null, 2);
+
+      if (response.ok) {
+        setStatus('đã gửi lệnh xong');
+      } else {
+        setStatus('backend trả lỗi');
+      }
+    } catch (error) {
+      resultEl.textContent = 'Lỗi fetch: ' + String(error);
+      setStatus('backend không phản hồi');
+    }
+  }
+
+  if (!SpeechRecognition) {
+    setStatus('browser không hỗ trợ SpeechRecognition');
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+  } else {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'vi-VN';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+
+    recognition.onstart = () => setStatus('đang nghe...');
+    recognition.onerror = (event) => setStatus(`lỗi ghi âm: ${event.error}`);
+
+    recognition.onresult = async (event) => {
+      let finalText = '';
+      for (let i = 0; i < event.results.length; i++) {
+        finalText += event.results[i][0].transcript + ' ';
+      }
+      transcriptEl.value = finalText.trim();
+      await sendTextCommand();
+    };
+
+    recognition.onend = () => {
+      if (!transcriptEl.value.trim()) {
+        setStatus('đã dừng ghi âm');
+      }
+    };
+
+    startBtn.onclick = () => {
+      transcriptEl.value = '';
+      resultEl.textContent = 'Chưa có dữ liệu.';
+      recognition.start();
+    };
+
+    stopBtn.onclick = () => recognition.stop();
+  }
+
+  sendBtn.onclick = sendTextCommand;
+</script>
+</body>
+</html>

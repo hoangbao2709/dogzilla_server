@@ -136,6 +136,10 @@ def status():
 
     data = {
         "robot_connected": robot.dog is not None,
+        "speed_mode": robot.speed_mode(),
+        "gait_type": robot.gait_type(),
+        "perform_enabled": robot.perform_enabled(),
+        "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
         "turn_speed_range": [
             getattr(config, "TURN_MIN", -70),
             getattr(config, "TURN_MAX",  70),
@@ -146,11 +150,13 @@ def status():
             getattr(config, "Z_MAX", 115),
         ],
         "z_current": robot.z_current(),
+        "roll_current": robot.roll_current(),
         "pitch_range": [
             getattr(config, "PITCH_MIN", -30.0),
             getattr(config, "PITCH_MAX",  30.0),
         ],
         "pitch_current": robot.pitch_current(),
+        "yaw_current": robot.yaw_current(),
         "battery": battery,
         "fw": fw,
         "fps": getattr(config, "FRAME_FPS", 30),
