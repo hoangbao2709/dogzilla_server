@@ -11,6 +11,20 @@ import re
 import socket
 
 bp = Blueprint("status", __name__)
+LIDAR_CONTAINER = os.environ.get("DOGZILLA_LIDAR_CONTAINER", "yahboom_humble")
+LIDAR_PROCESS_PATTERNS = (
+    "/root/docker-mi/main.py",
+    "robot_navigation.launch.py",
+    "cartographer_node",
+    "planner_server",
+    "controller_server",
+    "behavior_server",
+    "bt_navigator",
+    "waypoint_follower",
+    "velocity_smoother",
+    "lifecycle_manager",
+    "oradar_scan",
+)
 
 
 # ===== Helpers: đọc system info từ Pi =====
@@ -105,6 +119,61 @@ def _get_system_time():
         return None
 
 
+def _lidar_process_running():
+    try:
+        pattern_expr = " | ".join(LIDAR_PROCESS_PATTERNS)
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                (
+                    "ps -eo args | grep -E "
+                    f"\"{pattern_expr}\" | grep -v grep >/dev/null"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _lidar_running():
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                "python3 - <<'PY'\n"
+                "import sys, urllib.request\n"
+                "try:\n"
+                "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=1.5) as r:\n"
+                "        sys.exit(0 if 200 <= int(getattr(r, 'status', 0)) < 300 else 1)\n"
+                "except Exception:\n"
+                "    sys.exit(1)\n"
+                "PY",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+    return _lidar_process_running()
+
+
 @bp.route("/status", methods=["GET", "POST"])
 def status():
     """
@@ -121,10 +190,14 @@ def status():
             if hasattr(robot.dog, "read_battery"):
                 battery = robot.dog.read_battery()
         except Exception as e:
-            # print("[Status] read_battery error:", e)
-            battery = robot.dog.read_battery()
-        if battery is not None:
-            voltage = round(9.0 + (battery / 100.0) * 3.6, 2)
+            print("[Status] read_battery error:", e)
+            battery = None
+        try:
+            if battery is not None:
+                voltage = round(9.0 + (battery / 100.0) * 3.6, 2)
+        except Exception as e:
+            print("[Status] voltage compute error:", e)
+            voltage = 11.4
         # try:
         #     if hasattr(robot.dog, "read_version"):
         #         fw = robot.dog.read_version()
@@ -137,41 +210,63 @@ def status():
     ip_addr     = _get_local_ip()
     t_now       = _get_system_time()
 
-    data = {
-        "robot_connected": robot.dog is not None,
-        "speed_mode": robot.speed_mode(),
-        "gait_type": robot.gait_type(),
-        "perform_enabled": robot.perform_enabled(),
-        "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-        "turn_speed_range": [
-            getattr(config, "TURN_MIN", -70),
-            getattr(config, "TURN_MAX",  70),
-        ],
-        "step_default": getattr(config, "STEP_DEFAULT", 10),
-        "z_range": [
-            getattr(config, "Z_MIN", 75),
-            getattr(config, "Z_MAX", 115),
-        ],
-        "z_current": robot.z_current(),
-        "roll_current": robot.roll_current(),
-        "pitch_range": [
-            getattr(config, "PITCH_MIN", -30.0),
-            getattr(config, "PITCH_MAX",  30.0),
-        ],
-        "pitch_current": robot.pitch_current(),
-        "yaw_current": robot.yaw_current(),
-        "battery": battery,
-        "voltage": voltage,
-        "fw": fw,
-        "fps": getattr(config, "FRAME_FPS", 30),
-
-        "system": {
-            "cpu_percent": cpu_percent,
-            "ram":  ram_str,
-            "disk": disk_str,
-            "ip":   ip_addr,
-            "time": t_now,
-        },
-    }
-
-    return jsonify(data)
+    try:
+        data = {
+            "robot_connected": robot.dog is not None,
+            "speed_mode": robot.speed_mode(),
+            "gait_type": robot.gait_type(),
+            "perform_enabled": robot.perform_enabled(),
+            "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
+            "lidar_running": _lidar_running(),
+            "turn_speed_range": [
+                getattr(config, "TURN_MIN", -70),
+                getattr(config, "TURN_MAX",  70),
+            ],
+            "step_default": getattr(config, "STEP_DEFAULT", 10),
+            "z_range": [
+                getattr(config, "Z_MIN", 75),
+                getattr(config, "Z_MAX", 115),
+            ],
+            "z_current": robot.z_current(),
+            "roll_current": robot.roll_current(),
+            "pitch_range": [
+                getattr(config, "PITCH_MIN", -30.0),
+                getattr(config, "PITCH_MAX",  30.0),
+            ],
+            "pitch_current": robot.pitch_current(),
+            "yaw_current": robot.yaw_current(),
+            "battery": battery,
+            "voltage": voltage,
+            "fw": fw,
+            "fps": getattr(config, "FRAME_FPS", 30),
+            "system": {
+                "cpu_percent": cpu_percent,
+                "ram":  ram_str,
+                "disk": disk_str,
+                "ip":   ip_addr,
+                "time": t_now,
+            },
+        }
+        return jsonify(data)
+    except Exception as e:
+        print("[Status] route build error:", e)
+        return jsonify({
+            "robot_connected": robot.dog is not None,
+            "speed_mode": "unknown",
+            "gait_type": "unknown",
+            "perform_enabled": False,
+            "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
+            "lidar_running": False,
+            "battery": battery,
+            "voltage": voltage,
+            "fw": fw,
+            "fps": getattr(config, "FRAME_FPS", 30),
+            "system": {
+                "cpu_percent": cpu_percent,
+                "ram": ram_str,
+                "disk": disk_str,
+                "ip": ip_addr,
+                "time": t_now,
+            },
+            "status_error": str(e),
+        })
