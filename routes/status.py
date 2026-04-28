@@ -198,11 +198,11 @@ def status():
         except Exception as e:
             print("[Status] voltage compute error:", e)
             voltage = 11.4
-        # try:
-        #     if hasattr(robot.dog, "read_version"):
-        #         fw = robot.dog.read_version()
-        #except Exception as e:
-            # print("[Status] read_version error:", e)
+        try:
+            if hasattr(robot.dog, "read_version"):
+                fw = robot.dog.read_version()
+        except Exception as e:
+            print("[Status] read_version error:", e)
 
     cpu_percent = _get_cpu_usage_percent()
     ram_str     = _get_ram_usage_string()
