@@ -8,6 +8,20 @@ import signal
 import subprocess
 import time
 bp = Blueprint("control", __name__)
+LIDAR_CONTAINER = os.environ.get("DOGZILLA_LIDAR_CONTAINER", "yahboom_humble")
+LIDAR_PROCESS_PATTERNS = (
+    "/root/docker-mi/main.py",
+    "robot_navigation.launch.py",
+    "cartographer_node",
+    "planner_server",
+    "controller_server",
+    "behavior_server",
+    "bt_navigator",
+    "waypoint_follower",
+    "velocity_smoother",
+    "lifecycle_manager",
+    "oradar_scan",
+)
 
 
 def _ok(result: str = "ok"):
@@ -48,6 +62,61 @@ def _tail_in_container(container: str, path: str, lines: int = 40) -> str:
         return (res.stdout or "").strip()
     except Exception:
         return ""
+
+
+def _lidar_process_running() -> bool:
+    try:
+        pattern_expr = " | ".join(LIDAR_PROCESS_PATTERNS)
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                (
+                    "ps -eo args | grep -E "
+                    f"\"{pattern_expr}\" | grep -v grep >/dev/null"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _lidar_running() -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                "python3 - <<'PY'\n"
+                "import sys, urllib.request\n"
+                "try:\n"
+                "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=1.5) as r:\n"
+                "        sys.exit(0 if 200 <= int(getattr(r, 'status', 0)) < 300 else 1)\n"
+                "except Exception:\n"
+                "    sys.exit(1)\n"
+                "PY",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return True
+    except Exception:
+        pass
+    return _lidar_process_running()
 
 
 POSTURE_ACTIONS = {
@@ -273,11 +342,21 @@ def control():
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
-        container = "yahboom_humble"
+        container = LIDAR_CONTAINER
 
         try:
             if action == "start":
                 subprocess.run(["docker", "start", container], check=False)
+                subprocess.run(
+                    ["docker", "exec", container, "pkill", "-f", "ros2"],
+                    check=False,
+                )
+                subprocess.run(
+                    ["docker", "exec", container, "pkill", "-f", "/root/docker-mi/main.py"],
+                    check=False,
+                )
+                time.sleep(2)
+
 
                 _run_checked(
                     [
@@ -306,7 +385,7 @@ def control():
                         "-lc",
                         "source /opt/ros/humble/setup.bash && "
                         "source /root/yahboomcar_ws/install/setup.bash && "
-                        "python3 /root/mimi_live_map_new/main.py "
+                        "python3 /root/docker-mi/main.py "
                         "> /tmp/lidar_map.log 2>&1",
                     ],
                 )
@@ -352,7 +431,7 @@ def control():
 
             patterns = [
                 "robot_navigation.launch.py",
-                "/root/mimi_live_map_new/main.py",
+                "/root/docker-mi/main.py",
                 "oradar_scan",
                 "cartographer_node",
                 "planner_server",
@@ -398,9 +477,9 @@ def control():
           "rx": ..., "ry": ..., "rz": ...
         }
 
-        á» Ä‘Ă¢y ta khĂ´ng map chi tiáº¿t ná»¯a mĂ  giao cho robot.body_adjust()
+        á» Ä‘Ă¢y ta khĂ´ng map chi tiáº¿t ná»¯a mĂ  giao cho robot.body_adjust()
         trong robot.py xá»­ lĂ½ (clamp + apply xuá»‘ng DOGZILLA náº¿u cĂ³,
-        Ä‘á»“ng thá»i lÆ°u state body_offset Ä‘á»ƒ /status dĂ¹ng Ä‘á»“ng bá»™ slider).
+        Ä‘á»“ng thá»i lÆ°u state body_offset Ä‘á»ƒ /status dĂ¹ng Ä‘á»“ng bá»™ slider).
         """
         payload = {
             "tx": float(data.get("tx", 0.0)),
@@ -426,6 +505,7 @@ def control():
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
+            "lidar_running": _lidar_running(),
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
             "pitch_current": robot.pitch_current(),
