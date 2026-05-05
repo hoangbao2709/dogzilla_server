@@ -342,6 +342,8 @@ def control():
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
+        mode = (data.get("mode") or "live_slam").strip().lower()
+
         container = LIDAR_CONTAINER
 
         try:
@@ -357,21 +359,41 @@ def control():
                 )
                 time.sleep(2)
 
-
-                _run_checked(
-                    [
-                        "docker",
-                        "exec",
-                        "-d",
-                        container,
-                        "bash",
-                        "-lc",
-                        "source /opt/ros/humble/setup.bash && "
-                        "source /root/yahboomcar_ws/install/setup.bash && "
-                        "ros2 launch mi_bringup robot_navigation.launch.py "
-                        "> /tmp/lidar_ros.log 2>&1",
-                    ],
-                )
+                if mode == "navigation":
+                    map_name = data.get("map_name")
+                    map_arg = ""
+                    if map_name:
+                        map_arg = f" map:=/root/docker-mi/saved_maps/{map_name}.yaml"
+                        
+                    _run_checked(
+                        [
+                            "docker",
+                            "exec",
+                            "-d",
+                            container,
+                            "bash",
+                            "-lc",
+                            "source /opt/ros/humble/setup.bash && "
+                            "source /root/yahboomcar_ws/install/setup.bash && "
+                            f"ros2 launch mi_bringup robot_navigation_static.launch.py{map_arg} "
+                            "> /tmp/lidar_ros.log 2>&1",
+                        ],
+                    )
+                else:
+                    _run_checked(
+                        [
+                            "docker",
+                            "exec",
+                            "-d",
+                            container,
+                            "bash",
+                            "-lc",
+                            "source /opt/ros/humble/setup.bash && "
+                            "source /root/yahboomcar_ws/install/setup.bash && "
+                            "ros2 launch mi_bringup robot_navigation.launch.py "
+                            "> /tmp/lidar_ros.log 2>&1",
+                        ],
+                    )
 
                 time.sleep(3)
 
@@ -425,9 +447,9 @@ def control():
                         details.append(f"ros log tail: {ros_log}")
                     if map_log:
                         details.append(f"map log tail: {map_log}")
-                    return _err("lidar start launched but map service is not ready | " + " | ".join(details), 500)
+                    return _err(f"lidar start launched but map service is not ready ({mode}) | " + " | ".join(details), 500)
 
-                return _ok("lidar start -> docker ros navigation + live_map started")
+                return _ok(f"lidar start -> docker ros {mode} + live_map started")
 
             patterns = [
                 "robot_navigation.launch.py",
@@ -443,6 +465,7 @@ def control():
                 "lifecycle_manager",
                 "dogzilla_cmd_adapter",
                 "dogzilla_state_bridge",
+                "dogzilla_state_bridge_2d",
                 "obstacle_avoidance_filter",
             ]
             for pattern in patterns:
