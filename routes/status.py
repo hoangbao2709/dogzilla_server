@@ -26,6 +26,92 @@ LIDAR_PROCESS_PATTERNS = (
     "oradar_scan",
 )
 
+def _run_text(command):
+    try:
+        return subprocess.check_output(
+            command,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _network_status(signal_percent, connected):
+    if not connected:
+        return "offline", "Mat ket noi"
+    if signal_percent is None:
+        return "strong", "Manh"
+    if signal_percent >= 75:
+        return "strong", "Manh"
+    if signal_percent >= 45:
+        return "medium", "Trung binh"
+    return "weak", "Yeu"
+
+
+def _get_active_network_info():
+    interface = _run_text(["sh", "-lc", "ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'"])
+    ip_addr = _run_text(["sh", "-lc", "ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"src\") {print $(i+1); exit}}'"])
+    gateway = _run_text(["sh", "-lc", "ip route | awk '/default/ {print $3; exit}'"])
+
+    if not interface:
+        interface = _run_text(["sh", "-lc", "ip -o -4 addr show scope global | awk '{print $2; exit}'"])
+    if not ip_addr:
+        ip_addr = _get_local_ip()
+
+    network_type = "wifi" if interface.startswith(("wl", "wlan")) else "ethernet" if interface.startswith(("eth", "en")) else "unknown"
+    ssid = ""
+    signal_percent = None
+    signal_dbm = None
+
+    if network_type == "wifi":
+        ssid = _run_text(["iwgetid", interface, "-r"])
+        if not ssid:
+            ssid = _run_text(["sh", "-lc", "nmcli -t -f active,ssid dev wifi | awk -F: '$1==\"yes\" {print $2; exit}'"])
+
+        raw_signal = _run_text(["sh", "-lc", "nmcli -t -f in-use,signal dev wifi | awk -F: '$1==\"*\" {print $2; exit}'"])
+        if raw_signal:
+            try:
+                signal_percent = max(0, min(100, int(float(raw_signal))))
+            except Exception:
+                signal_percent = None
+
+        if signal_percent is None:
+            wireless_line = _run_text(["sh", "-lc", f"awk '$1 ~ /{interface}:/ {{print $3, $4; exit}}' /proc/net/wireless"])
+            parts = wireless_line.split()
+            if parts:
+                try:
+                    quality = float(parts[0].strip("."))
+                    signal_percent = max(0, min(100, round((quality / 70.0) * 100)))
+                except Exception:
+                    signal_percent = None
+            if len(parts) > 1:
+                try:
+                    signal_dbm = float(parts[1].strip("."))
+                except Exception:
+                    signal_dbm = None
+
+    connected = bool(ip_addr and ip_addr != "x.x.x.x")
+    status_value, status_label = _network_status(signal_percent, connected)
+    name = ssid or interface or "Unknown network"
+
+    return {
+        "connected": connected,
+        "name": name,
+        "ssid": ssid or None,
+        "interface": interface or None,
+        "type": network_type,
+        "ip": ip_addr if ip_addr != "x.x.x.x" else None,
+        "gateway": gateway or None,
+        "signal_percent": signal_percent,
+        "signal_dbm": signal_dbm,
+        "status": status_value,
+        "status_label": status_label,
+        "summary": f"{name} - {status_label}" if connected else status_label,
+        "timestamp": int(time.time()),
+    }
+
 
 # ===== Helpers: đọc system info từ Pi =====
 
@@ -172,6 +258,22 @@ def _lidar_running():
     except Exception:
         pass
     return _lidar_process_running()
+
+
+@bp.route("/network", methods=["GET"])
+def network():
+    try:
+        return jsonify({"ok": True, **_get_active_network_info()})
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "connected": False,
+            "name": "Unknown network",
+            "status": "offline",
+            "status_label": "Mat ket noi",
+            "summary": "Mat ket noi",
+            "error": str(e),
+        }), 500
 
 
 @bp.route("/status", methods=["GET", "POST"])
