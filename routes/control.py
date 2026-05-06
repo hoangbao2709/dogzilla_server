@@ -11,6 +11,7 @@ bp = Blueprint("control", __name__)
 LIDAR_CONTAINER = os.environ.get("DOGZILLA_LIDAR_CONTAINER", "yahboom_humble")
 LIDAR_PROCESS_PATTERNS = (
     "/root/docker-mi/main.py",
+    "/root/docker-mi/main_nav.py",
     "robot_navigation.launch.py",
     "cartographer_node",
     "planner_server",
@@ -21,6 +22,10 @@ LIDAR_PROCESS_PATTERNS = (
     "velocity_smoother",
     "lifecycle_manager",
     "oradar_scan",
+    "robot_navigation_static.launch.py",
+    "cartographer_occupancy_grid_node",
+    "occupancy_grid",
+    "slam_live_map_viewer",
 )
 
 
@@ -353,10 +358,14 @@ def control():
                     ["docker", "exec", container, "pkill", "-f", "ros2"],
                     check=False,
                 )
-                subprocess.run(
-                    ["docker", "exec", container, "pkill", "-f", "/root/docker-mi/main.py"],
-                    check=False,
-                )
+                for pattern in [
+                    "/root/docker-mi/main.py",
+                    "/root/docker-mi/main_nav.py",
+                    "cartographer",
+                    "occupancy_grid",
+                    "slam_live_map_viewer",
+                ]:
+                    subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
                 time.sleep(2)
 
                 if mode == "navigation":
@@ -397,6 +406,8 @@ def control():
 
                 time.sleep(3)
 
+                web_main = "/root/docker-mi/main_nav.py" if mode == "navigation" else "/root/docker-mi/main.py"
+
                 _run_checked(
                     [
                         "docker",
@@ -407,7 +418,7 @@ def control():
                         "-lc",
                         "source /opt/ros/humble/setup.bash && "
                         "source /root/yahboomcar_ws/install/setup.bash && "
-                        "python3 /root/docker-mi/main.py "
+                        f"python3 {web_main} "
                         "> /tmp/lidar_map.log 2>&1",
                     ],
                 )
@@ -465,8 +476,16 @@ def control():
                 "lifecycle_manager",
                 "dogzilla_cmd_adapter",
                 "dogzilla_state_bridge",
+                "cartographer_occupancy_grid_node",
                 "dogzilla_state_bridge_2d",
                 "obstacle_avoidance_filter",
+                "robot_navigation_static.launch.py",
+                "/root/docker-mi/main_nav.py",
+                "occupancy_grid",
+                "slam_live_map_viewer",
+                "mi_cartographer","amcl","map_server","static_transform_publisher",
+                "cartographer.launch.py",
+                
             ]
             for pattern in patterns:
                 subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
