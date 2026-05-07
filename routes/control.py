@@ -27,6 +27,16 @@ LIDAR_PROCESS_PATTERNS = (
     "occupancy_grid",
     "slam_live_map_viewer",
 )
+ROS_REQUIRED_NODES = (
+    "/dogzilla_state_bridge",
+    "/dogzilla_cmd_adapter",
+)
+ROS_STACK_NODES = (
+    "/cartographer_node",
+    "/cartographer_occupancy_grid_node",
+    "/planner_server",
+    "/controller_server",
+)
 
 
 def _ok(result: str = "ok"):
@@ -94,6 +104,35 @@ def _lidar_process_running() -> bool:
         return False
 
 
+def _get_ros_nodes_in_container():
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                "source /opt/ros/humble/setup.bash && "
+                "source /root/yahboomcar_ws/install/setup.bash && "
+                "ros2 node list",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return set()
+        return {
+            line.strip()
+            for line in (result.stdout or "").splitlines()
+            if line.strip().startswith("/")
+        }
+    except Exception:
+        return set()
+
+
 def _lidar_running() -> bool:
     try:
         result = subprocess.run(
@@ -118,10 +157,15 @@ def _lidar_running() -> bool:
             check=False,
         )
         if result.returncode == 0:
-            return True
+            nodes = _get_ros_nodes_in_container()
+            if (
+                all(node in nodes for node in ROS_REQUIRED_NODES)
+                and any(node in nodes for node in ROS_STACK_NODES)
+            ):
+                return True
     except Exception:
         pass
-    return _lidar_process_running()
+    return False
 
 
 POSTURE_ACTIONS = {
@@ -162,6 +206,51 @@ def control():
 
     # ---------- 1) Motion + stop ----------
     if cmd in ("forward", "back", "left", "right", "turnleft", "turnright", "stop"):
+        if _lidar_running():
+            vx = 0.0
+            vy = 0.0
+            wz = 0.0
+
+            if cmd == "forward":
+                vx = 0.08
+            elif cmd == "back":
+                vx = -0.08
+            elif cmd == "left":
+                vy = 0.06
+            elif cmd == "right":
+                vy = -0.06
+            elif cmd == "turnleft":
+                wz = 0.45
+            elif cmd == "turnright":
+                wz = -0.45
+            elif cmd == "stop":
+                vx = 0.0
+                vy = 0.0
+                wz = 0.0
+
+            res = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    LIDAR_CONTAINER,
+                    "bash",
+                    "-lc",
+                    "source /opt/ros/humble/setup.bash && "
+                    "source /root/yahboomcar_ws/install/setup.bash && "
+                    f"ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "
+                    f"'{{linear: {{x: {vx}, y: {vy}, z: 0.0}}, angular: {{x: 0.0, y: 0.0, z: {wz}}}}}'",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+
+            if res.returncode != 0:
+                return _err(res.stderr or res.stdout or "cmd_vel publish failed", 500)
+
+            return _ok(f"ros cmd_vel vx={vx}, vy={vy}, wz={wz}")
+
         step = data.get("step")
         speed = data.get("speed")
         mode = data.get("mode")
@@ -353,6 +442,11 @@ def control():
 
         try:
             if action == "start":
+                if _lidar_process_running():
+                    return _ok(f"lidar process already running ({mode})")
+                if _lidar_running():
+                    return _ok(f"lidar already running ({mode})")
+                robot.release_serial()
                 subprocess.run(["docker", "start", container], check=False)
                 subprocess.run(
                     ["docker", "exec", container, "pkill", "-f", "ros2"],
@@ -372,7 +466,8 @@ def control():
                     map_name = data.get("map_name")
                     map_arg = ""
                     if map_name:
-                        map_arg = f" map:=/root/docker-mi/saved_maps/{map_name}.yaml"
+                        safe_map_name = os.path.splitext(os.path.basename(str(map_name)))[0]
+                        map_arg = f" map:=/root/docker-mi/saved_maps/{safe_map_name}.pbstream"
                         
                     _run_checked(
                         [
@@ -404,9 +499,9 @@ def control():
                         ],
                     )
 
-                time.sleep(3)
+                time.sleep(8)
 
-                web_main = "/root/docker-mi/main_nav.py" if mode == "navigation" else "/root/docker-mi/main.py"
+                web_main = "/root/docker-mi/main.py" 
 
                 _run_checked(
                     [
@@ -489,6 +584,7 @@ def control():
             ]
             for pattern in patterns:
                 subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
+            robot.reconnect_serial()
             return _ok("lidar stop -> docker lidar stack stopped")
         except subprocess.CalledProcessError as e:
             stdout = (e.stdout or "").strip()

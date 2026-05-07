@@ -15,6 +15,7 @@ class Robot:
 
     def __init__(self) -> None:
         self.dog: Optional[_DOG] = None
+        self._dog_conn_lock = threading.Lock()
 
         # locks
         self._z_lock = threading.Lock()
@@ -43,22 +44,44 @@ class Robot:
         # joystick state
         self._joystick_thread: Optional[threading.Thread] = None
 
-        if _DOG is not None:
-            try:
-                self.dog = _DOG(port=config.DOG_PORT)
-                if hasattr(self.dog, "ser"):
-                    self.dog.ser.baudrate = config.DOG_BAUD
-                print(f"[DOGZILLA] Connected on {config.DOG_PORT} @ {config.DOG_BAUD}")
-            except Exception as e:
-                print("[DOGZILLA] Init error:", e)
-                self.dog = None
-        else:
-            print("[DOGZILLA] Library not found. Running without robot.")
+        self.reconnect_serial()
 
     # ---------- utils ----------
 
     def _clamp(self, v: float, lo: float, hi: float) -> float:
         return lo if v < lo else hi if v > hi else v
+
+    def reconnect_serial(self) -> bool:
+        with self._dog_conn_lock:
+            if self.dog is not None:
+                return True
+            if _DOG is None:
+                print("[DOGZILLA] Library not found. Running without robot.")
+                return False
+            try:
+                self.dog = _DOG(port=config.DOG_PORT)
+                if hasattr(self.dog, "ser"):
+                    self.dog.ser.baudrate = config.DOG_BAUD
+                print(f"[DOGZILLA] Connected on {config.DOG_PORT} @ {config.DOG_BAUD}")
+                return True
+            except Exception as e:
+                print("[DOGZILLA] Init error:", e)
+                self.dog = None
+                return False
+
+    def release_serial(self) -> None:
+        with self._dog_conn_lock:
+            dog = self.dog
+            self.dog = None
+        if dog is None:
+            return
+        try:
+            ser = getattr(dog, "ser", None)
+            if ser is not None and getattr(ser, "is_open", False):
+                ser.close()
+            print("[DOGZILLA] Serial released")
+        except Exception as e:
+            print("[DOGZILLA] Release error:", e)
 
     def speed_mode(self) -> str:
         return self._speed_mode
@@ -240,7 +263,7 @@ class Robot:
     # ---------- Attitude ----------
 
     def _set_axis(self, ax: str, val: float) -> str:
-        """Gá»i Ä‘Ăºng chá»¯ kĂ½: dog.attitude(axis, value)."""
+        """Gá»i Ä‘Ăºng chá»¯ kĂ½: dog.attitude(axis, value)."""
         if self.dog is None:
             with self._att_lock:
                 if ax == 'r':
@@ -342,7 +365,7 @@ class Robot:
 
     def body_offset(self) -> Dict[str, float]:
         """
-        Tráº£ vá» body_offset hiá»‡n táº¡i Ä‘á»ƒ dĂ¹ng cho /status Ä‘áº©y lĂªn frontend.
+        Tráº£ vá» body_offset hiá»‡n táº¡i Ä‘á»ƒ dĂ¹ng cho /status Ä‘áº©y lĂªn frontend.
         """
         with self._body_lock:
             return dict(self._body_offset)
@@ -402,7 +425,7 @@ class Robot:
 
     def _joystick_loop(self, debug: bool = False, js_id: int = 0) -> None:
         """
-        VĂ²ng láº·p Ä‘á»c tay cáº§m USB vĂ  gá»i Dogzilla_Joystick.
+        VĂ²ng láº·p Ä‘á»c tay cáº§m USB vĂ  gá»i Dogzilla_Joystick.
         Cháº¡y trong thread riĂªng (daemon).
         """
         if self.dog is None:
@@ -424,7 +447,7 @@ class Robot:
 
     def start_joystick(self, debug: bool = False, js_id: int = 0) -> None:
         """
-        Gá»i hĂ m nĂ y á»Ÿ chá»— app khá»Ÿi Ä‘á»™ng (vd: khi Django/Flask ready)
+        Gá»i hĂ m nĂ y á»Ÿ chá»— app khá»Ÿi Ä‘á»™ng (vd: khi Django/Flask ready)
         Ä‘á»ƒ cháº¡y thread tay cáº§m.
         """
         if self.dog is None:

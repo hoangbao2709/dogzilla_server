@@ -257,7 +257,7 @@ def _lidar_running():
             return True
     except Exception:
         pass
-    return _lidar_process_running()
+    return False
 
 
 @bp.route("/network", methods=["GET"])
@@ -287,7 +287,9 @@ def status():
     voltage = 11.4
     fw      = None
 
-    if robot.dog is not None:
+    lidar_running = _lidar_running()
+
+    if robot.dog is not None and not lidar_running:
         try:
             if hasattr(robot.dog, "read_battery"):
                 battery = robot.dog.read_battery()
@@ -319,7 +321,7 @@ def status():
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": _lidar_running(),
+            "lidar_running": lidar_running,
             "turn_speed_range": [
                 getattr(config, "TURN_MIN", -70),
                 getattr(config, "TURN_MAX",  70),
@@ -358,7 +360,7 @@ def status():
             "gait_type": "unknown",
             "perform_enabled": False,
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": False,
+            "lidar_running": lidar_running,
             "battery": battery,
             "voltage": voltage,
             "fw": fw,
