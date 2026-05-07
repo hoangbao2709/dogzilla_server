@@ -528,9 +528,10 @@ def control():
 
         try:
             if action == "start":
-                if _lidar_process_running():
+                restart_for_static_map = mode == "navigation"
+                if _lidar_process_running() and not restart_for_static_map:
                     return _ok(f"lidar process already running ({mode})")
-                if _lidar_running():
+                if _lidar_running() and not restart_for_static_map:
                     return _ok(f"lidar already running ({mode})")
                 robot.release_serial()
                 subprocess.run(["docker", "start", container], check=False)
@@ -541,9 +542,22 @@ def control():
                 for pattern in [
                     "/root/docker-mi/main.py",
                     "/root/docker-mi/main_nav.py",
+                    "robot_navigation.launch.py",
+                    "robot_navigation_static.launch.py",
                     "cartographer",
                     "occupancy_grid",
                     "slam_live_map_viewer",
+                    "amcl",
+                    "map_server",
+                    "planner_server",
+                    "controller_server",
+                    "behavior_server",
+                    "bt_navigator",
+                    "waypoint_follower",
+                    "velocity_smoother",
+                    "lifecycle_manager",
+                    "dogzilla_cmd_adapter",
+                    "dogzilla_state_bridge",
                 ]:
                     subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
                 time.sleep(2)
@@ -552,6 +566,8 @@ def control():
                     map_arg = _build_static_map_arg(
                         data.get("map_arg") or data.get("map_name")
                     )
+                    if not map_arg:
+                        return _err("navigation mode requires map_arg or map_name", 400)
                         
                     _run_checked(
                         [
@@ -563,6 +579,7 @@ def control():
                             "-lc",
                             "source /opt/ros/humble/setup.bash && "
                             "source /root/yahboomcar_ws/install/setup.bash && "
+                            f"echo 'robot_navigation_static.launch.py{map_arg}' > /tmp/lidar_launch_cmd.log && "
                             f"ros2 launch mi_bringup robot_navigation_static.launch.py{map_arg} "
                             "> /tmp/lidar_ros.log 2>&1",
                         ],
