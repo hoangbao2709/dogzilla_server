@@ -79,6 +79,21 @@ def _tail_in_container(container: str, path: str, lines: int = 40) -> str:
         return ""
 
 
+def _build_static_map_arg(raw_value: object) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("map:="):
+        raw = raw.split("map:=", 1)[1].strip()
+
+    safe_map_name = os.path.splitext(os.path.basename(raw))[0]
+    if not safe_map_name:
+        return ""
+
+    return f" map:=/root/docker-mi/saved_maps/{safe_map_name}.pbstream"
+
+
 def _lidar_process_running() -> bool:
     try:
         pattern_expr = " | ".join(LIDAR_PROCESS_PATTERNS)
@@ -534,11 +549,9 @@ def control():
                 time.sleep(2)
 
                 if mode == "navigation":
-                    map_name = data.get("map_name")
-                    map_arg = ""
-                    if map_name:
-                        safe_map_name = os.path.splitext(os.path.basename(str(map_name)))[0]
-                        map_arg = f" map:=/root/docker-mi/saved_maps/{safe_map_name}.pbstream"
+                    map_arg = _build_static_map_arg(
+                        data.get("map_arg") or data.get("map_name")
+                    )
                         
                     _run_checked(
                         [
