@@ -316,7 +316,9 @@ def status():
 
     try:
         data = {
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": robot.speed_mode(),
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
@@ -355,7 +357,9 @@ def status():
     except Exception as e:
         print("[Status] route build error:", e)
         return jsonify({
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": "unknown",
             "gait_type": "unknown",
             "perform_enabled": False,

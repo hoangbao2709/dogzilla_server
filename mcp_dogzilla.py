@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
+import math
 import os
 import threading
 import time
+from urllib.parse import urlencode
 
 import requests
 
@@ -103,10 +105,15 @@ class RobotAPI:
         point_port = os.getenv("GO_TO_POINT_PORT", "8080")
 
         self.control_url = f"http://{robot_ip}:{robot_port}/control"
+        self.point_base_url = f"http://{robot_ip}:{point_port}"
         self.go_to_point_url = f"http://{robot_ip}:{point_port}/go_to_point"
+        self.points_url = f"{self.point_base_url}/points"
+        self.set_goal_pose_url = f"{self.point_base_url}/set_goal_pose"
+        self.qr_standoff_m = float(os.getenv("GO_TO_POINT_STANDOFF_M", "0.35"))
 
         print(f"[MCP_Dogzilla] Robot API control={self.control_url}")
         print(f"[MCP_Dogzilla] Robot API go_to_point={self.go_to_point_url}")
+        print(f"[MCP_Dogzilla] Robot API set_goal_pose={self.set_goal_pose_url}")
 
     def _post(self, url: str, payload: dict) -> bool:
         try:
@@ -127,6 +134,36 @@ class RobotAPI:
             print(f"[MCP_Dogzilla] Unexpected error: {e}")
             return False
 
+    def _get_points(self) -> dict:
+        try:
+            resp = requests.get(self.points_url, timeout=TIMEOUT)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[MCP_Dogzilla] Get points failed: {e}")
+            return {}
+
+    def _send_goal_pose(self, x: float, y: float, yaw: float) -> bool:
+        try:
+            query = urlencode({"x": x, "y": y, "yaw": yaw})
+            url = f"{self.set_goal_pose_url}?{query}"
+            resp = requests.get(url, timeout=TIMEOUT)
+            if resp.status_code == 200:
+                print(f"[MCP_Dogzilla] OK {url}")
+                return True
+            print(f"[MCP_Dogzilla] HTTP {resp.status_code} {url}")
+            return False
+        except requests.exceptions.ConnectionError:
+            print(f"[MCP_Dogzilla] Connection error: {self.set_goal_pose_url}")
+            return False
+        except requests.exceptions.Timeout:
+            print(f"[MCP_Dogzilla] Timeout after {TIMEOUT}s: {self.set_goal_pose_url}")
+            return False
+        except Exception as e:
+            print(f"[MCP_Dogzilla] Set goal pose failed: {e}")
+            return False
+
     def dance(self) -> bool:
         return self._post(
             self.control_url,
@@ -134,7 +171,30 @@ class RobotAPI:
         )
 
     def _go_to_point(self, point: str) -> bool:
-        return self._post(self.go_to_point_url, {"name": point})
+        points = self._get_points()
+        point_info = points.get(point) or points.get(point.upper()) or points.get(point.lower())
+        if not point_info:
+            print(f"[MCP_Dogzilla] Point not found: {point}")
+            return False
+
+        try:
+            point_x = float(point_info["x"])
+            point_y = float(point_info["y"])
+            approach_yaw = float(point_info.get("yaw", 0.0))
+            target_x = point_x - (self.qr_standoff_m * math.cos(approach_yaw))
+            target_y = point_y - (self.qr_standoff_m * math.sin(approach_yaw))
+            target_yaw = math.atan2(point_y - target_y, point_x - target_x)
+        except Exception as e:
+            print(f"[MCP_Dogzilla] Invalid point {point}: {e}")
+            return False
+
+        print(
+            "[MCP_Dogzilla] Voice goal "
+            f"{point}: source=({point_x:.2f},{point_y:.2f},{approach_yaw:.2f}) "
+            f"target=({target_x:.2f},{target_y:.2f},{target_yaw:.2f}) "
+            f"standoff={self.qr_standoff_m:.2f}m"
+        )
+        return self._send_goal_pose(target_x, target_y, target_yaw)
 
     def go_to_point_a(self) -> bool:
         return self._go_to_point("A")

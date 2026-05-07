@@ -738,13 +738,19 @@ def control():
 
     # ---------- 6) Legacy / status nhanh ----------
     if cmd == "status":
+        lidar_running = _lidar_running()
         return jsonify({
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": robot.speed_mode(),
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": _lidar_running(),
+            "lidar_running": lidar_running,
+            "lidar": {
+                "running": lidar_running,
+            },
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
             "pitch_current": robot.pitch_current(),
