@@ -106,6 +106,35 @@ def _lidar_process_running() -> bool:
 
 def _get_ros_nodes_in_container():
     try:
+        script = r"""
+import sys
+import time
+import rclpy
+
+try:
+    rclpy.init()
+    node = rclpy.create_node("dogzilla_node_probe")
+    names = set()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        for name, namespace in node.get_node_names_and_namespaces():
+            ns = (namespace or "").rstrip("/")
+            full = f"{ns}/{name}" if ns and ns != "/" else f"/{name}"
+            names.add(full)
+    for item in sorted(names):
+        print(item)
+    node.destroy_node()
+    rclpy.shutdown()
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
+    sys.exit(1)
+"""
         result = subprocess.run(
             [
                 "docker",
@@ -115,7 +144,7 @@ def _get_ros_nodes_in_container():
                 "-lc",
                 "source /opt/ros/humble/setup.bash && "
                 "source /root/yahboomcar_ws/install/setup.bash && "
-                "ros2 node list",
+                f"python3 - <<'PY'\n{script}\nPY",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -131,6 +160,64 @@ def _get_ros_nodes_in_container():
         }
     except Exception:
         return set()
+
+
+def _publish_cmd_vel(vx: float, vy: float, wz: float):
+    script = f"""
+import sys
+import time
+import rclpy
+from geometry_msgs.msg import Twist
+
+try:
+    rclpy.init()
+    node = rclpy.create_node("dogzilla_manual_cmd_pub")
+    pub = node.create_publisher(Twist, "/cmd_vel", 10)
+
+    msg = Twist()
+    msg.linear.x = {float(vx)!r}
+    msg.linear.y = {float(vy)!r}
+    msg.linear.z = 0.0
+    msg.angular.x = 0.0
+    msg.angular.y = 0.0
+    msg.angular.z = {float(wz)!r}
+
+    deadline = time.time() + 0.5
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.05)
+
+    for _ in range(3):
+        pub.publish(msg)
+        rclpy.spin_once(node, timeout_sec=0.05)
+        time.sleep(0.05)
+
+    node.destroy_node()
+    rclpy.shutdown()
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
+    sys.exit(1)
+"""
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            LIDAR_CONTAINER,
+            "bash",
+            "-lc",
+            "source /opt/ros/humble/setup.bash && "
+            "source /root/yahboomcar_ws/install/setup.bash && "
+            f"python3 - <<'PY'\n{script}\nPY",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
 
 
 def _lidar_running() -> bool:
@@ -228,23 +315,7 @@ def control():
                 vy = 0.0
                 wz = 0.0
 
-            res = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    LIDAR_CONTAINER,
-                    "bash",
-                    "-lc",
-                    "source /opt/ros/humble/setup.bash && "
-                    "source /root/yahboomcar_ws/install/setup.bash && "
-                    f"ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist "
-                    f"'{{linear: {{x: {vx}, y: {vy}, z: 0.0}}, angular: {{x: 0.0, y: 0.0, z: {wz}}}}}'",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-            )
+            res = _publish_cmd_vel(vx, vy, wz)
 
             if res.returncode != 0:
                 return _err(res.stderr or res.stdout or "cmd_vel publish failed", 500)
