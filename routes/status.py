@@ -141,12 +141,30 @@ def _get_cpu_usage_percent():
 
 def _get_ram_usage_string():
     try:
-        cmd = "free | awk 'NR==2{printf \"RAM:%2d%% -> %.1fGB\", 100*($2-$7)/$2, ($2/1048576.0)}'"
+        cmd = "free | awk 'NR==2{printf \"RAM:%.1f%% -> %.1fGB\", 100*($2-$7)/$2, ($2/1048576.0)}'"
         out = subprocess.check_output(cmd, shell=True)
         return out.decode("utf-8")
     except Exception as e:
         print("[Status] _get_ram_usage_string error:", e)
         return None
+
+
+def _get_cpu_temperature_c():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            raw = f.read().strip()
+        return round(float(raw) / 1000.0, 1)
+    except Exception:
+        pass
+
+    try:
+        out = subprocess.check_output(["vcgencmd", "measure_temp"], stderr=subprocess.DEVNULL)
+        match = re.search(r"(-?\d+(?:\.\d+)?)", out.decode("utf-8", errors="ignore"))
+        if match:
+            return float(match.group(1))
+    except Exception as e:
+        print("[Status] _get_cpu_temperature_c error:", e)
+    return None
 
 
 def _get_disk_usage_string():
@@ -309,6 +327,7 @@ def status():
             print("[Status] read_version error:", e)
 
     cpu_percent = _get_cpu_usage_percent()
+    cpu_temp_c  = _get_cpu_temperature_c()
     ram_str     = _get_ram_usage_string()
     disk_str    = _get_disk_usage_string()
     ip_addr     = _get_local_ip()
@@ -347,6 +366,8 @@ def status():
             "fps": getattr(config, "FRAME_FPS", 30),
             "system": {
                 "cpu_percent": cpu_percent,
+                "cpu_temp": cpu_temp_c,
+                "temperature": cpu_temp_c,
                 "ram":  ram_str,
                 "disk": disk_str,
                 "ip":   ip_addr,
@@ -371,6 +392,8 @@ def status():
             "fps": getattr(config, "FRAME_FPS", 30),
             "system": {
                 "cpu_percent": cpu_percent,
+                "cpu_temp": cpu_temp_c,
+                "temperature": cpu_temp_c,
                 "ram": ram_str,
                 "disk": disk_str,
                 "ip": ip_addr,
