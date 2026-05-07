@@ -12,6 +12,7 @@ import json
 
 
 from .robot import robot   # d�ng singleton Robot d� t?o + joystick
+from .mcp_dogzilla import mcp_dogzilla_service
 LINK_FILE = Path.home() / ".robot_link.json"  # /home/pi/.robot_link.json
 
 app = Flask(__name__)
@@ -47,7 +48,8 @@ def root():
             "gait_type": "POST /control {command: gait_type, mode: trot|walk|high_walk}",
             "perform": "POST /control {command: perform, action: on|off}",
             "mark_time": "POST /control {command: mark_time, value: 0..35}",
-            "reset": "POST /control {command: reset}"
+            "reset": "POST /control {command: reset}",
+            "mcp_dogzilla_voice": "serial voice commands 52,19,20,21,22"
         }
     })
 
@@ -72,6 +74,10 @@ def health():
 # --- Camera init ---
 init_camera()
 atexit.register(cleanup_camera)
+
+# --- MCP_Dogzilla voice serial service ---
+mcp_dogzilla_service.start()
+atexit.register(mcp_dogzilla_service.stop)
 
 # --- START JOYSTICK TAY C?M ---
 # (ch?y 1 l?n khi process Flask du?c import)
@@ -100,5 +106,6 @@ def link_account():
 
 if __name__ == "__main__":
     print(f"[Server] HTTP_PORT={config.HTTP_PORT}  CAMERA_INDEX={config.CAMERA_INDEX}  "
-         f"DOG={config.DOG_PORT}@{config.DOG_BAUD}")
+         f"DOG={config.DOG_PORT}@{config.DOG_BAUD}  "
+         f"MCP_DOGZILLA={config.MCP_DOGZILLA_SPEECH_PORT}@{config.MCP_DOGZILLA_SPEECH_BAUD}")
     app.run(host="0.0.0.0", port=config.HTTP_PORT, threaded=True)
