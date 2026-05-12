@@ -2,18 +2,25 @@
 # -*- coding: utf-8 -*-
 from flask import Blueprint, request, jsonify
 from ..robot import robot
+import json
 from .. import config
 import os
 import signal
+import shlex
 import subprocess
 import time
 bp = Blueprint("control", __name__)
 LIDAR_CONTAINER = os.environ.get("DOGZILLA_LIDAR_CONTAINER", "yahboom_humble")
+MAP_SAVE_DIR = os.environ.get("DOGZILLA_MAP_SAVE_DIR", "/root/docker-mi/saved_maps")
+DEFAULT_NAV_MAP_PATH = (os.environ.get("DOGZILLA_DEFAULT_NAV_MAP", "") or "").strip() or None
+SUPPORTED_LIDAR_MODES = ( "navigation", "live_slam")
 LIDAR_PROCESS_PATTERNS = (
     "/root/docker-mi/main.py",
     "/root/docker-mi/main_nav.py",
     "robot_navigation.launch.py",
     "cartographer_node",
+    "amcl",
+    "map_server",
     "planner_server",
     "controller_server",
     "behavior_server",
@@ -96,7 +103,7 @@ def _build_static_map_arg(raw_value: object) -> str:
 
 def _lidar_process_running() -> bool:
     try:
-        pattern_expr = " | ".join(LIDAR_PROCESS_PATTERNS)
+        pattern_expr = "|".join(LIDAR_PROCESS_PATTERNS)
         result = subprocess.run(
             [
                 "docker",
@@ -245,10 +252,10 @@ def _lidar_running() -> bool:
                 "bash",
                 "-lc",
                 "python3 - <<'PY'\n"
-                "import sys, urllib.request\n"
+                "import json, sys, urllib.request\n"
                 "try:\n"
                 "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=1.5) as r:\n"
-                "        sys.exit(0 if 200 <= int(getattr(r, 'status', 0)) < 300 else 1)\n"
+                "        print(r.read().decode('utf-8'))\n"
                 "except Exception:\n"
                 "    sys.exit(1)\n"
                 "PY",
@@ -268,6 +275,183 @@ def _lidar_running() -> bool:
     except Exception:
         pass
     return False
+
+
+def _detect_lidar_mode() -> str | None:
+    try:
+        checks = (
+            ("navigation", "ps -eo args | grep -E \"robot_navigation_static.launch.py|amcl|map_server\" | grep -v grep >/dev/null"),
+            ("live_slam", "ps -eo args | grep -E \"robot_navigation.launch.py|cartographer_node\" | grep -v grep >/dev/null"),
+        )
+        for mode, cmd in checks:
+            result = subprocess.run(
+                ["docker", "exec", LIDAR_CONTAINER, "bash", "-lc", cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                return mode
+    except Exception:
+        return None
+    return None
+
+
+def _resolve_navigation_map_path(map_name: str | None, map_path: str | None) -> str:
+    raw_map_path = (map_path or "").strip()
+    if raw_map_path:
+        if not raw_map_path.startswith("/"):
+            raise ValueError("navigation map_path must be an absolute .yaml path inside container")
+        if not raw_map_path.endswith((".yaml", ".yml")):
+            raise ValueError("navigation map_path must point to a .yaml file")
+        return raw_map_path
+
+    safe_name = "".join(ch if ch.isalnum() or ch in "_-" else "_" for ch in (map_name or "").strip())
+    if not safe_name:
+        if DEFAULT_NAV_MAP_PATH:
+            return DEFAULT_NAV_MAP_PATH
+
+        latest_map_path = _find_latest_saved_map_path()
+        if latest_map_path:
+            return latest_map_path
+
+        raise ValueError("navigation requires map_name, map_path, or at least one saved .yaml map in the container")
+    return os.path.join(MAP_SAVE_DIR, safe_name + ".yaml")
+
+
+def _find_latest_saved_map_path() -> str | None:
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                (
+                    "python3 - <<'PY'\n"
+                    "from pathlib import Path\n"
+                    "map_dir = Path(" + repr(MAP_SAVE_DIR) + ")\n"
+                    "candidates = [p for p in map_dir.glob('*.yaml') if p.is_file()]\n"
+                    "if not candidates:\n"
+                    "    raise SystemExit(1)\n"
+                    "latest = max(candidates, key=lambda p: p.stat().st_mtime)\n"
+                    "print(str(latest))\n"
+                    "PY"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            latest = (result.stdout or "").strip()
+            return latest or None
+    except Exception:
+        return None
+    return None
+
+
+def _check_launch_runtime_ready(mode: str) -> tuple[bool, str]:
+    if mode not in SUPPORTED_LIDAR_MODES:
+        return False, f"unsupported lidar mode: {mode}"
+
+    if mode == "navigation":
+        launch_name = "robot_navigation_static.launch.py"
+    else:
+        launch_name = "robot_navigation.launch.py"
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                (
+                    "python3 - <<'PY'\n"
+                    "from pathlib import Path\n"
+                    "\n"
+                    f"launch_path = Path('/root/yahboomcar_ws/install/mi_bringup/share/mi_bringup/launch/{launch_name}')\n"
+                    "\n"
+                    "if not launch_path.exists():\n"
+                    "    print('missing installed launch: ' + str(launch_path))\n"
+                    "    raise SystemExit(2)\n"
+                    "\n"
+                    f"print('{mode} runtime ready')\n"
+                    "PY"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except Exception as e:
+        return False, f"runtime check failed: {e}"
+
+    details = (result.stdout or "").strip() or (result.stderr or "").strip()
+    if result.returncode == 0:
+        return True, details or f"{mode} runtime ready"
+
+    return (
+        False,
+        "stale mi_bringup install inside container; rebuild and re-source the ROS workspace"
+        + (f" | {details}" if details else ""),
+    )
+
+
+def _ensure_nav_web_process_running() -> None:
+    if _nav_web_process_running():
+        return
+
+    _run_checked(
+        [
+            "docker",
+            "exec",
+            "-d",
+            LIDAR_CONTAINER,
+            "bash",
+            "-lc",
+            "source /opt/ros/humble/setup.bash && "
+            "source /root/yahboomcar_ws/install/setup.bash && "
+            "python3 /root/docker-mi/main.py "
+            "> /tmp/lidar_map.log 2>&1",
+        ],
+    )
+
+
+def _request_nav_web(path: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                (
+                    "python3 - <<'PY'\n"
+                    "import sys, urllib.request\n"
+                    f"url = 'http://127.0.0.1:8080{path}'\n"
+                    "try:\n"
+                    "    with urllib.request.urlopen(url, timeout=2.0) as r:\n"
+                    "        sys.exit(0 if 200 <= int(getattr(r, 'status', 0)) < 300 else 1)\n"
+                    "except Exception:\n"
+                    "    sys.exit(1)\n"
+                    "PY"
+                ),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 POSTURE_ACTIONS = {
@@ -294,7 +478,55 @@ BEHAVIOR_ACTIONS = {
     "Seek": 18,
     "Handshake": 19,
 }
+# ===== FIX ROS2 HARD RESET =====
+def _ros2_hard_reset(container: str):
+    patterns = [
+        "robot_navigation",
+        "cartographer",
+        "amcl",
+        "map_server",
+        "planner_server",
+        "controller_server",
+        "bt_navigator",
+        "waypoint_follower",
+        "velocity_smoother",
+        "lifecycle_manager",
+        "/root/docker-mi/main.py",
+    ]
 
+    for p in patterns:
+        subprocess.run(
+            ["docker", "exec", container, "pkill", "-f", p],
+            check=False
+        )
+
+    subprocess.run(["docker", "exec", container, "pkill", "-f", "ros2"], check=False)
+
+    subprocess.run(["docker", "exec", container, "bash", "-lc", "rm -rf /dev/shm/* || true"], check=False)
+    subprocess.run(["docker", "exec", container, "bash", "-lc", "ros2 daemon stop || true; ros2 daemon start || true"], check=False)
+
+    time.sleep(2)
+
+
+# ===== WAIT NAV2 READY =====
+def _wait_nav2_active(container: str, timeout=15):
+    for _ in range(timeout):
+        res = subprocess.run(
+            [
+                "docker","exec",container,"bash","-lc",
+                "source /opt/ros/humble/setup.bash && "
+                "source /root/yahboomcar_ws/install/setup.bash && "
+                "ros2 lifecycle get /controller_server 2>/dev/null || true"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if "active [3]" in (res.stdout or ""):
+            return True
+        time.sleep(1)
+    return False
 
 @bp.route("/control", methods=["POST"])
 def control():
@@ -519,6 +751,7 @@ def control():
 
     if cmd == "lidar":
         action = (data.get("action") or "").strip().lower()
+
         if action not in ("start", "stop"):
             return _err("lidar requires 'action' = 'start'|'stop'")
 
@@ -619,30 +852,10 @@ def control():
                     ],
                 )
 
-                time.sleep(2)
-                probe = subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        container,
-                        "bash",
-                        "-lc",
-                        "python3 - <<'PY'\n"
-                        "import sys, urllib.request\n"
-                        "try:\n"
-                        "    with urllib.request.urlopen('http://127.0.0.1:8080/state', timeout=2) as r:\n"
-                        "        print(r.status)\n"
-                        "except Exception as e:\n"
-                        "    print(f'ERR:{e}')\n"
-                        "    sys.exit(1)\n"
-                        "PY",
-                    ],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    check=False,
-                )
-                if probe.returncode != 0:
+            time.sleep(5)
+
+            if mode == "navigation":
+                if not _wait_nav2_active(container):
                     ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
                     map_log = _tail_in_container(container, "/tmp/lidar_map.log")
                     details = []
