@@ -26,6 +26,92 @@ LIDAR_PROCESS_PATTERNS = (
     "oradar_scan",
 )
 
+def _run_text(command):
+    try:
+        return subprocess.check_output(
+            command,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _network_status(signal_percent, connected):
+    if not connected:
+        return "offline", "Mat ket noi"
+    if signal_percent is None:
+        return "strong", "Manh"
+    if signal_percent >= 75:
+        return "strong", "Manh"
+    if signal_percent >= 45:
+        return "medium", "Trung binh"
+    return "weak", "Yeu"
+
+
+def _get_active_network_info():
+    interface = _run_text(["sh", "-lc", "ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'"])
+    ip_addr = _run_text(["sh", "-lc", "ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"src\") {print $(i+1); exit}}'"])
+    gateway = _run_text(["sh", "-lc", "ip route | awk '/default/ {print $3; exit}'"])
+
+    if not interface:
+        interface = _run_text(["sh", "-lc", "ip -o -4 addr show scope global | awk '{print $2; exit}'"])
+    if not ip_addr:
+        ip_addr = _get_local_ip()
+
+    network_type = "wifi" if interface.startswith(("wl", "wlan")) else "ethernet" if interface.startswith(("eth", "en")) else "unknown"
+    ssid = ""
+    signal_percent = None
+    signal_dbm = None
+
+    if network_type == "wifi":
+        ssid = _run_text(["iwgetid", interface, "-r"])
+        if not ssid:
+            ssid = _run_text(["sh", "-lc", "nmcli -t -f active,ssid dev wifi | awk -F: '$1==\"yes\" {print $2; exit}'"])
+
+        raw_signal = _run_text(["sh", "-lc", "nmcli -t -f in-use,signal dev wifi | awk -F: '$1==\"*\" {print $2; exit}'"])
+        if raw_signal:
+            try:
+                signal_percent = max(0, min(100, int(float(raw_signal))))
+            except Exception:
+                signal_percent = None
+
+        if signal_percent is None:
+            wireless_line = _run_text(["sh", "-lc", f"awk '$1 ~ /{interface}:/ {{print $3, $4; exit}}' /proc/net/wireless"])
+            parts = wireless_line.split()
+            if parts:
+                try:
+                    quality = float(parts[0].strip("."))
+                    signal_percent = max(0, min(100, round((quality / 70.0) * 100)))
+                except Exception:
+                    signal_percent = None
+            if len(parts) > 1:
+                try:
+                    signal_dbm = float(parts[1].strip("."))
+                except Exception:
+                    signal_dbm = None
+
+    connected = bool(ip_addr and ip_addr != "x.x.x.x")
+    status_value, status_label = _network_status(signal_percent, connected)
+    name = ssid or interface or "Unknown network"
+
+    return {
+        "connected": connected,
+        "name": name,
+        "ssid": ssid or None,
+        "interface": interface or None,
+        "type": network_type,
+        "ip": ip_addr if ip_addr != "x.x.x.x" else None,
+        "gateway": gateway or None,
+        "signal_percent": signal_percent,
+        "signal_dbm": signal_dbm,
+        "status": status_value,
+        "status_label": status_label,
+        "summary": f"{name} - {status_label}" if connected else status_label,
+        "timestamp": int(time.time()),
+    }
+
 
 # ===== Helpers: đọc system info từ Pi =====
 
@@ -55,12 +141,30 @@ def _get_cpu_usage_percent():
 
 def _get_ram_usage_string():
     try:
-        cmd = "free | awk 'NR==2{printf \"RAM:%2d%% -> %.1fGB\", 100*($2-$7)/$2, ($2/1048576.0)}'"
+        cmd = "free | awk 'NR==2{printf \"RAM:%.1f%% -> %.1fGB\", 100*($2-$7)/$2, ($2/1048576.0)}'"
         out = subprocess.check_output(cmd, shell=True)
         return out.decode("utf-8")
     except Exception as e:
         print("[Status] _get_ram_usage_string error:", e)
         return None
+
+
+def _get_cpu_temperature_c():
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            raw = f.read().strip()
+        return round(float(raw) / 1000.0, 1)
+    except Exception:
+        pass
+
+    try:
+        out = subprocess.check_output(["vcgencmd", "measure_temp"], stderr=subprocess.DEVNULL)
+        match = re.search(r"(-?\d+(?:\.\d+)?)", out.decode("utf-8", errors="ignore"))
+        if match:
+            return float(match.group(1))
+    except Exception as e:
+        print("[Status] _get_cpu_temperature_c error:", e)
+    return None
 
 
 def _get_disk_usage_string():
@@ -171,7 +275,23 @@ def _lidar_running():
             return True
     except Exception:
         pass
-    return _lidar_process_running()
+    return False
+
+
+@bp.route("/network", methods=["GET"])
+def network():
+    try:
+        return jsonify({"ok": True, **_get_active_network_info()})
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "connected": False,
+            "name": "Unknown network",
+            "status": "offline",
+            "status_label": "Mat ket noi",
+            "summary": "Mat ket noi",
+            "error": str(e),
+        }), 500
 
 
 @bp.route("/status", methods=["GET", "POST"])
@@ -185,7 +305,9 @@ def status():
     voltage = 11.4
     fw      = None
 
-    if robot.dog is not None:
+    lidar_running = _lidar_running()
+
+    if robot.dog is not None and not lidar_running:
         try:
             if hasattr(robot.dog, "read_battery"):
                 battery = robot.dog.read_battery()
@@ -205,6 +327,7 @@ def status():
             print("[Status] read_version error:", e)
 
     cpu_percent = _get_cpu_usage_percent()
+    cpu_temp_c  = _get_cpu_temperature_c()
     ram_str     = _get_ram_usage_string()
     disk_str    = _get_disk_usage_string()
     ip_addr     = _get_local_ip()
@@ -212,12 +335,14 @@ def status():
 
     try:
         data = {
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": robot.speed_mode(),
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": _lidar_running(),
+            "lidar_running": lidar_running,
             "turn_speed_range": [
                 getattr(config, "TURN_MIN", -70),
                 getattr(config, "TURN_MAX",  70),
@@ -241,6 +366,8 @@ def status():
             "fps": getattr(config, "FRAME_FPS", 30),
             "system": {
                 "cpu_percent": cpu_percent,
+                "cpu_temp": cpu_temp_c,
+                "temperature": cpu_temp_c,
                 "ram":  ram_str,
                 "disk": disk_str,
                 "ip":   ip_addr,
@@ -251,18 +378,22 @@ def status():
     except Exception as e:
         print("[Status] route build error:", e)
         return jsonify({
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": "unknown",
             "gait_type": "unknown",
             "perform_enabled": False,
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": False,
+            "lidar_running": lidar_running,
             "battery": battery,
             "voltage": voltage,
             "fw": fw,
             "fps": getattr(config, "FRAME_FPS", 30),
             "system": {
                 "cpu_percent": cpu_percent,
+                "cpu_temp": cpu_temp_c,
+                "temperature": cpu_temp_c,
                 "ram": ram_str,
                 "disk": disk_str,
                 "ip": ip_addr,

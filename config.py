@@ -42,3 +42,9 @@ PITCH_DEFAULT = float(os.environ.get("PITCH_DEFAULT","0"))
 
 JOYSTICK_DEBUG = True   # ho?c False
 JOYSTICK_ID = 0         # /dev/input/js0
+
+# MCP_Dogzilla voice command service
+MCP_DOGZILLA_ENABLED = os.environ.get("MCP_DOGZILLA_ENABLED", "1") not in ("0", "false", "False")
+MCP_DOGZILLA_SPEECH_PORT = os.environ.get("MCP_DOGZILLA_SPEECH_PORT", "/dev/ttyUSB0")
+MCP_DOGZILLA_SPEECH_BAUD = int(os.environ.get("MCP_DOGZILLA_SPEECH_BAUD", "115200"))
+MCP_DOGZILLA_DEBUG = os.environ.get("MCP_DOGZILLA_DEBUG", "1") not in ("0", "false", "False")

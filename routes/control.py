@@ -15,7 +15,8 @@ MAP_SAVE_DIR = os.environ.get("DOGZILLA_MAP_SAVE_DIR", "/root/docker-mi/saved_ma
 DEFAULT_NAV_MAP_PATH = (os.environ.get("DOGZILLA_DEFAULT_NAV_MAP", "") or "").strip() or None
 SUPPORTED_LIDAR_MODES = ( "navigation", "live_slam")
 LIDAR_PROCESS_PATTERNS = (
-    "robot_navigation_static.launch.py",
+    "/root/docker-mi/main.py",
+    "/root/docker-mi/main_nav.py",
     "robot_navigation.launch.py",
     "cartographer_node",
     "amcl",
@@ -28,6 +29,20 @@ LIDAR_PROCESS_PATTERNS = (
     "velocity_smoother",
     "lifecycle_manager",
     "oradar_scan",
+    "robot_navigation_static.launch.py",
+    "cartographer_occupancy_grid_node",
+    "occupancy_grid",
+    "slam_live_map_viewer",
+)
+ROS_REQUIRED_NODES = (
+    "/dogzilla_state_bridge",
+    "/dogzilla_cmd_adapter",
+)
+ROS_STACK_NODES = (
+    "/cartographer_node",
+    "/cartographer_occupancy_grid_node",
+    "/planner_server",
+    "/controller_server",
 )
 
 
@@ -71,25 +86,19 @@ def _tail_in_container(container: str, path: str, lines: int = 40) -> str:
         return ""
 
 
-def _nav_web_process_running() -> bool:
-    try:
-        result = subprocess.run(
-            [
-                "docker",
-                "exec",
-                LIDAR_CONTAINER,
-                "bash",
-                "-lc",
-                "ps -eo args | grep -F '/root/docker-mi/main.py' | grep -v grep >/dev/null",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+def _build_static_map_arg(raw_value: object) -> str:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("map:="):
+        raw = raw.split("map:=", 1)[1].strip()
+
+    safe_map_name = os.path.splitext(os.path.basename(raw))[0]
+    if not safe_map_name:
+        return ""
+
+    return f" map:=/root/docker-mi/saved_maps/{safe_map_name}.pbstream"
 
 
 def _lidar_process_running() -> bool:
@@ -117,7 +126,123 @@ def _lidar_process_running() -> bool:
         return False
 
 
-def _nav_state_snapshot() -> dict | None:
+def _get_ros_nodes_in_container():
+    try:
+        script = r"""
+import sys
+import time
+import rclpy
+
+try:
+    rclpy.init()
+    node = rclpy.create_node("dogzilla_node_probe")
+    names = set()
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.1)
+        for name, namespace in node.get_node_names_and_namespaces():
+            ns = (namespace or "").rstrip("/")
+            full = f"{ns}/{name}" if ns and ns != "/" else f"/{name}"
+            names.add(full)
+    for item in sorted(names):
+        print(item)
+    node.destroy_node()
+    rclpy.shutdown()
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
+    sys.exit(1)
+"""
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                LIDAR_CONTAINER,
+                "bash",
+                "-lc",
+                "source /opt/ros/humble/setup.bash && "
+                "source /root/yahboomcar_ws/install/setup.bash && "
+                f"python3 - <<'PY'\n{script}\nPY",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return set()
+        return {
+            line.strip()
+            for line in (result.stdout or "").splitlines()
+            if line.strip().startswith("/")
+        }
+    except Exception:
+        return set()
+
+
+def _publish_cmd_vel(vx: float, vy: float, wz: float):
+    script = f"""
+import sys
+import time
+import rclpy
+from geometry_msgs.msg import Twist
+
+try:
+    rclpy.init()
+    node = rclpy.create_node("dogzilla_manual_cmd_pub")
+    pub = node.create_publisher(Twist, "/cmd_vel", 10)
+
+    msg = Twist()
+    msg.linear.x = {float(vx)!r}
+    msg.linear.y = {float(vy)!r}
+    msg.linear.z = 0.0
+    msg.angular.x = 0.0
+    msg.angular.y = 0.0
+    msg.angular.z = {float(wz)!r}
+
+    deadline = time.time() + 0.5
+    while time.time() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.05)
+
+    for _ in range(3):
+        pub.publish(msg)
+        rclpy.spin_once(node, timeout_sec=0.05)
+        time.sleep(0.05)
+
+    node.destroy_node()
+    rclpy.shutdown()
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
+    sys.exit(1)
+"""
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            LIDAR_CONTAINER,
+            "bash",
+            "-lc",
+            "source /opt/ros/humble/setup.bash && "
+            "source /root/yahboomcar_ws/install/setup.bash && "
+            f"python3 - <<'PY'\n{script}\nPY",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+
+
+def _lidar_running() -> bool:
     try:
         result = subprocess.run(
             [
@@ -140,25 +265,16 @@ def _nav_state_snapshot() -> dict | None:
             text=True,
             check=False,
         )
-        if result.returncode != 0:
-            return None
-        raw = (result.stdout or "").strip()
-        if not raw:
-            return None
-        return json.loads(raw)
+        if result.returncode == 0:
+            nodes = _get_ros_nodes_in_container()
+            if (
+                all(node in nodes for node in ROS_REQUIRED_NODES)
+                and any(node in nodes for node in ROS_STACK_NODES)
+            ):
+                return True
     except Exception:
-        return None
-
-
-def _lidar_running() -> bool:
-    state = _nav_state_snapshot() or {}
-    status = state.get("status") or {}
-    if any(
-        bool(status.get(key))
-        for key in ("slam_ok", "tf_ok", "nav2_server_ok", "nav2_goal_active")
-    ):
-        return True
-    return _lidar_process_running()
+        pass
+    return False
 
 
 def _detect_lidar_mode() -> str | None:
@@ -424,6 +540,35 @@ def control():
 
     # ---------- 1) Motion + stop ----------
     if cmd in ("forward", "back", "left", "right", "turnleft", "turnright", "stop"):
+        if _lidar_running():
+            vx = 0.0
+            vy = 0.0
+            wz = 0.0
+
+            if cmd == "forward":
+                vx = 0.08
+            elif cmd == "back":
+                vx = -0.08
+            elif cmd == "left":
+                vy = 0.06
+            elif cmd == "right":
+                vy = -0.06
+            elif cmd == "turnleft":
+                wz = 0.45
+            elif cmd == "turnright":
+                wz = -0.45
+            elif cmd == "stop":
+                vx = 0.0
+                vy = 0.0
+                wz = 0.0
+
+            res = _publish_cmd_vel(vx, vy, wz)
+
+            if res.returncode != 0:
+                return _err(res.stderr or res.stdout or "cmd_vel publish failed", 500)
+
+            return _ok(f"ros cmd_vel vx={vx}, vy={vy}, wz={wz}")
+
         step = data.get("step")
         speed = data.get("speed")
         mode = data.get("mode")
@@ -611,68 +756,165 @@ def control():
             return _err("lidar requires 'action' = 'start'|'stop'")
 
         mode = (data.get("mode") or "live_slam").strip().lower()
-        if mode not in SUPPORTED_LIDAR_MODES:
-            return _err("lidar start requires 'mode' = 'navigation'|'live_slam'")
 
         container = LIDAR_CONTAINER
 
         try:
-            if action == "stop":
+            if action == "start":
+                restart_for_static_map = mode == "navigation"
+                if _lidar_process_running() and not restart_for_static_map:
+                    return _ok(f"lidar process already running ({mode})")
+                if _lidar_running() and not restart_for_static_map:
+                    return _ok(f"lidar already running ({mode})")
+                robot.release_serial()
                 subprocess.run(["docker", "start", container], check=False)
-                _ros2_hard_reset(container)
-                return _ok("lidar stopped + ROS2 reset")
-            subprocess.run(["docker", "start", container], check=False)
-            _ros2_hard_reset(container)
-            
-            ready, details = _check_launch_runtime_ready(mode)
-            if not ready:
-                return _err(details, 500)
+                subprocess.run(
+                    ["docker", "exec", container, "pkill", "-f", "ros2"],
+                    check=False,
+                )
+                for pattern in [
+                    "/root/docker-mi/main.py",
+                    "/root/docker-mi/main_nav.py",
+                    "robot_navigation.launch.py",
+                    "robot_navigation_static.launch.py",
+                    "cartographer",
+                    "occupancy_grid",
+                    "slam_live_map_viewer",
+                    "amcl",
+                    "map_server",
+                    "planner_server",
+                    "controller_server",
+                    "behavior_server",
+                    "bt_navigator",
+                    "waypoint_follower",
+                    "velocity_smoother",
+                    "lifecycle_manager",
+                    "dogzilla_cmd_adapter",
+                    "dogzilla_state_bridge",
+                ]:
+                    subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
+                time.sleep(2)
 
-            resolved_map_path = None
-            if mode == "navigation":
-                try:
-                    resolved_map_path = _resolve_navigation_map_path(
-                        data.get("map_name"),
-                        data.get("map_path"),
+                if mode == "navigation":
+                    map_arg = _build_static_map_arg(
+                        data.get("map_arg") or data.get("map_name")
                     )
-                except ValueError as e:
-                    return _err(str(e))
+                    if not map_arg:
+                        return _err("navigation mode requires map_arg or map_name", 400)
+                        
+                    _run_checked(
+                        [
+                            "docker",
+                            "exec",
+                            "-d",
+                            container,
+                            "bash",
+                            "-lc",
+                            "source /opt/ros/humble/setup.bash && "
+                            "source /root/yahboomcar_ws/install/setup.bash && "
+                            f"echo 'robot_navigation_static.launch.py{map_arg}' > /tmp/lidar_launch_cmd.log && "
+                            f"ros2 launch mi_bringup robot_navigation_static.launch.py{map_arg} "
+                            "> /tmp/lidar_ros.log 2>&1",
+                        ],
+                    )
+                else:
+                    _run_checked(
+                        [
+                            "docker",
+                            "exec",
+                            "-d",
+                            container,
+                            "bash",
+                            "-lc",
+                            "source /opt/ros/humble/setup.bash && "
+                            "source /root/yahboomcar_ws/install/setup.bash && "
+                            "ros2 launch mi_bringup robot_navigation.launch.py "
+                            "> /tmp/lidar_ros.log 2>&1",
+                        ],
+                    )
 
-            if mode == "navigation":
-                ros_launch_cmd = (
-                    "source /opt/ros/humble/setup.bash && "
-                    "source /root/yahboomcar_ws/install/setup.bash && "
-                    f"ros2 launch mi_bringup robot_navigation_static.launch.py map:={shlex.quote(resolved_map_path)} "
-                    "> /tmp/lidar_ros.log 2>&1"
-                )
-            else:
-                ros_launch_cmd = (
-                    "source /opt/ros/humble/setup.bash && "
-                    "source /root/yahboomcar_ws/install/setup.bash && "
-                    "ros2 launch mi_bringup robot_navigation.launch.py "
-                    "> /tmp/lidar_ros.log 2>&1"
-                )
+                time.sleep(8)
 
-            _run_checked([
-                "docker", "exec", "-d", container,
-                "bash", "-lc", ros_launch_cmd,
-            ])
+                web_main = "/root/docker-mi/main.py" 
+
+                _run_checked(
+                    [
+                        "docker",
+                        "exec",
+                        "-d",
+                        container,
+                        "bash",
+                        "-lc",
+                        "source /opt/ros/humble/setup.bash && "
+                        "source /root/yahboomcar_ws/install/setup.bash && "
+                        f"python3 {web_main} "
+                        "> /tmp/lidar_map.log 2>&1",
+                    ],
+                )
 
             time.sleep(5)
 
             if mode == "navigation":
                 if not _wait_nav2_active(container):
                     ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
-                    return _err("nav2 not active | " + ros_log, 500)
+                    map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+                    details = []
+                    if probe.stdout:
+                        details.append(f"map probe: {probe.stdout.strip()}")
+                    if probe.stderr:
+                        details.append(f"probe stderr: {probe.stderr.strip()}")
+                    if ros_log:
+                        details.append(f"ros log tail: {ros_log}")
+                    if map_log:
+                        details.append(f"map log tail: {map_log}")
+                    return _err(f"lidar start launched but map service is not ready ({mode}) | " + " | ".join(details), 500)
 
-            _ensure_nav_web_process_running()
+                return _ok(f"lidar start -> docker ros {mode} + live_map started")
 
-            if mode == "live_slam":
-                _request_nav_web("/use_live_map")
-
-            extra = f" map={resolved_map_path}" if resolved_map_path else ""
-            return _ok(f"lidar start -> {mode}{extra}")
-
+            patterns = [
+                "robot_navigation.launch.py",
+                "/root/docker-mi/main.py",
+                "oradar_scan",
+                "cartographer_node",
+                "planner_server",
+                "controller_server",
+                "behavior_server",
+                "bt_navigator",
+                "waypoint_follower",
+                "velocity_smoother",
+                "lifecycle_manager",
+                "dogzilla_cmd_adapter",
+                "dogzilla_state_bridge",
+                "cartographer_occupancy_grid_node",
+                "dogzilla_state_bridge_2d",
+                "obstacle_avoidance_filter",
+                "robot_navigation_static.launch.py",
+                "/root/docker-mi/main_nav.py",
+                "occupancy_grid",
+                "slam_live_map_viewer",
+                "mi_cartographer","amcl","map_server","static_transform_publisher",
+                "cartographer.launch.py",
+                
+            ]
+            for pattern in patterns:
+                subprocess.run(["docker", "exec", container, "pkill", "-f", pattern], check=False)
+            robot.reconnect_serial()
+            return _ok("lidar stop -> docker lidar stack stopped")
+        except subprocess.CalledProcessError as e:
+            stdout = (e.stdout or "").strip()
+            stderr = (e.stderr or "").strip()
+            ros_log = _tail_in_container(container, "/tmp/lidar_ros.log")
+            map_log = _tail_in_container(container, "/tmp/lidar_map.log")
+            details = [f"cmd={e.cmd}"]
+            if stdout:
+                details.append(f"stdout={stdout}")
+            if stderr:
+                details.append(f"stderr={stderr}")
+            if ros_log:
+                details.append(f"ros log tail: {ros_log}")
+            if map_log:
+                details.append(f"map log tail: {map_log}")
+            return _err(f"lidar {action} error | " + " | ".join(details), 500)
         except Exception as e:
             return _err(str(e), 500)
 
@@ -709,17 +951,18 @@ def control():
 
     # ---------- 6) Legacy / status nhanh ----------
     if cmd == "status":
+        lidar_running = _lidar_running()
         return jsonify({
-            "robot_connected": robot.dog is not None,
+            "server_connected": True,
+            "robot_connected": robot.dog is not None or lidar_running,
+            "robot_serial_connected": robot.dog is not None,
             "speed_mode": robot.speed_mode(),
             "gait_type": robot.gait_type(),
             "perform_enabled": robot.perform_enabled(),
             "stabilizing_enabled": getattr(robot, "stabilizing_enabled", False),
-            "lidar_running": _lidar_running(),
-            "lidar_mode": _detect_lidar_mode(),
+            "lidar_running": lidar_running,
             "lidar": {
-                "running": _lidar_running(),
-                "mode": _detect_lidar_mode(),
+                "running": lidar_running,
             },
             "z_current": robot.z_current(),
             "roll_current": robot.roll_current(),
